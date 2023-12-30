@@ -1,0 +1,10 @@
+{
+    // vscode上での表示名
+    "name": "alternative-server",
+    // devcontainer.jsonから見たときのdocker-compose.ymlの場所
+    "dockerComposeFile": "../docker-compose.yml",
+    // docker-compose.ymlで指定したサービス名
+    "service": "app",
+    // vs codeで開くディレクトリ
+    "workspaceFolder": "/workspace",
+}
