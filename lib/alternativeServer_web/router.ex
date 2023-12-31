@@ -12,12 +12,22 @@ defmodule AlternativeServerWeb.Router do
 
   pipeline :api do
     plug :accepts, ["json"]
+    plug CORSPlug
   end
 
   scope "/", AlternativeServerWeb do
     pipe_through :browser
 
     get "/", PageController, :home
+  end
+
+  scope "/api", AlternativeServerWeb do
+    pipe_through :api
+
+    scope "/v1", V1, as: :v1 do
+      get "/healthcheck", HealthCheckController, :getHealth
+      post "/healthcheck", HealthCheckController, :postHealth
+    end
   end
 
   # Other scopes may use custom stacks.
