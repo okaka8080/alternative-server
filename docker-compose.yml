@@ -18,7 +18,18 @@ services:
     ports:
       - ${POSTGRES_PORT}:5432
     volumes:
-      - ./db/data:/var/lib/postgresql/data
+      - dbdata:/var/lib/postgresql/data
+
+  adminer:
+    container_name: alternative-adminer
+    hostname: adminer
+    image: adminer:4.7.5
+    restart: always
+    ports:
+      - "8080:8080"
+    depends_on:
+      - db
 
 volumes:
   node_modules:
+  dbdata: null
