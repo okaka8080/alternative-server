@@ -10,12 +10,12 @@
 # We recommend using the bang functions (`insert!`, `update!`
 # and so on) as they will fail if something goes wrong.
 
-alias AlternativeServer.User
-AlternativeServer.Repo.insert!(%User{
-  email: "test@gmail.com",
-  password: "password",
-  name: "admin",
-  coins: 100000,
-  last_login: nil,
-  is_deleted: false,
-})
+# alias AlternativeServer.User
+# AlternativeServer.Repo.insert!(%User{
+#   email: "test@gmail.com",
+#   password: "password",
+#   name: "admin",
+#   coins: 100000,
+#   last_login: nil,
+#   is_deleted: false,
+# })
