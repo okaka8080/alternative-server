@@ -31,6 +31,7 @@ defmodule AlternativeServerWeb.Router do
       get "/healthcheck", HealthCheckController, :getHealth
       post "/healthcheck", HealthCheckController, :postHealth
       post "/log_in", UserApiSessionController, :create
+      post "/register", UserApiSessionController, :register
     end
   end
 

@@ -15,9 +15,23 @@ defmodule AlternativeServerWeb.V1.UserApiSessionController do
     end
   end
 
+  def register(conn, params) do
+    if result = Accounts.register_user(params) do
+      {:ok, user} = result
+      token = Accounts.generate_user_session_token(user) |> Base.encode64()
+      json(conn, %{id: user.id, name: user.name, email: user.email, coins: user.coins,token: token})
+    else
+      conn
+      |> put_status(:bad_request)
+      |> put_view(AlternativeServerWeb.ErrorHTML)
+      |> render(:"400")
+    end
+  end
+
   @spec status(Plug.Conn.t(), any()) :: Plug.Conn.t()
   def status(conn, _params) do
     user = conn.assigns.current_user
+
     json(conn, %{
       status: user.email <> " enable"
     })
