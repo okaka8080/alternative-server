@@ -15,6 +15,7 @@ defmodule AlternativeServer.Accounts.User do
     field :last_login, :naive_datetime
     field :is_deleted, :boolean, default: false
 
+
     timestamps(type: :utc_datetime)
   end
 
