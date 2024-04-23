@@ -6,7 +6,7 @@ defmodule AlternativeServerWeb.V1.UserApiSessionController do
   def create(conn, %{"email" => email, "password" => password}) do
     if user = Accounts.get_user_by_email_and_password(email, password) do
       token = Accounts.generate_user_session_token(user) |> Base.encode64()
-      json(conn, %{token: token})
+      json(conn, %{token: token, id: user.id, name: user.name})
     else
       conn
       |> put_status(:unauthorized)
