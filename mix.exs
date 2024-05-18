@@ -53,6 +53,7 @@ defmodule AlternativeServer.MixProject do
       {:dns_cluster, "~> 0.1.1"},
       {:plug_cowboy, "~> 2.5"},
       {:cors_plug, "~> 3.0"},
+      {:sqids, "~> 0.1.0"},
     ]
   end
 

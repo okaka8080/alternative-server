@@ -3,10 +3,12 @@ defmodule AlternativeServer.Repo.Migrations.CreateRooms do
 
   def change do
     create table(:rooms, primary_key: false) do
-      add :id, :binary_id, primary_key: true
+      add :id, :string, primary_key: true
       add :name, :string
+      add :password, :string
       add :joined_users, :integer
-      add :is_active, :boolean, default: false, null: false
+      add :is_active, :boolean, default: true, null: false
+      add :is_public, :boolean, default: true, null: false
       add :owner_id, references(:users, on_delete: :nothing, type: :binary_id)
 
       timestamps(type: :utc_datetime)

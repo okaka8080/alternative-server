@@ -4,7 +4,7 @@ defmodule AlternativeServer.Repo.Migrations.CreateUsersRooms do
   def change do
     create table(:users_rooms) do
       add :user_id, references(:users, on_delete: :nothing, type: :binary_id)
-      add :room_id, references(:rooms, on_delete: :nothing, type: :binary_id)
+      add :room_id, references(:rooms, on_delete: :nothing, type: :string)
 
       timestamps(type: :utc_datetime)
     end
