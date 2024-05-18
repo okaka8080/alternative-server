@@ -40,6 +40,12 @@ defmodule AlternativeServerWeb.Router do
 
     scope "/v1", V1, as: :v1 do
       get "/status", UserApiSessionController, :status
+      get "/rooms", RoomController, :getAll
+      get "/rooms/:id", RoomController, :get
+      post "/rooms/create", RoomController, :new
+      put "/rooms/join/:id", RoomController, :join
+      put "/rooms/exit/:id", RoomController, :exit
+      delete "/rooms/:id", RoomController, :delete
     end
   end
 
