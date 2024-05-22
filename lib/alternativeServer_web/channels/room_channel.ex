@@ -1,8 +1,12 @@
 defmodule AlternativeServerWeb.RoomChannel do
   use Phoenix.Channel
   alias AlternativeServer.Accounts
+  alias AlternativeServer.Redis
   require Logger
 
+  @doc """
+  WebSocket用の関数
+  """
   def join("room:lobby", _message, socket) do
     {:ok, socket}
   end
@@ -10,8 +14,11 @@ defmodule AlternativeServerWeb.RoomChannel do
   def join("room:" <> private_room_id, params, socket) do
     case authenticate(params) do
       {:ok, user} ->
-        send(self(), {:after_join, %{user_id: user.user.id, user_name: user.user.name}})
-        {:ok, assign(socket, :user, user)}
+        # Redisのルーム初期化
+        Redis.set("room_state_#{private_room_id}", 0)
+        send(self(), {:after_join, %{user_id: user.id, user_name: user.name}})
+        {:ok, assign(socket, :user_assign, %{user: user, room_id: private_room_id})}
+
       _ ->
         {:error, %{reason: "unauthorized"}}
     end
@@ -20,9 +27,10 @@ defmodule AlternativeServerWeb.RoomChannel do
   def authenticate(params) do
     token = params["token"]
     Logger.info("token is #{token}")
+
     if user = Accounts.get_user_by_session_token(token |> Base.decode64!()) do
       Logger.info("joined user is #{user.name}")
-      {:ok, %{user: user}}
+      {:ok, %{id: user.id, name: user.name}}
     else
       Logger.error("joined user is not found")
       {:error, %{reason: "unauthorized"}}
@@ -34,8 +42,27 @@ defmodule AlternativeServerWeb.RoomChannel do
     {:noreply, socket}
   end
 
-  def handle_in("stanby", payload, socket) do
-    broadcast!(socket, "stanby", payload)
+  def handle_in("set_ready", %{"user_id" => user_id, "status" => status}, socket) do
+    new_assign = Map.put(socket.assigns.user_assign, "status", status)
+    socket = assign(socket, :user_assign, new_assign)
+    broadcast!(socket, "set_ready", %{user_id: user_id, status: status})
+
+    if status == true do
+      Redis.incr("room_state_#{socket.assigns.room_id}")
+      Logger.info(Redis.get("room_state_#{socket.assigns.room_id}"))
+    else
+      Redis.decr("room_state_#{socket.assigns.room_id}")
+      Logger.info(Redis.get("room_state_#{socket.assigns.room_id}"))
+    end
+
+    case Redis.get("room_state_#{socket.assigns.room_id}") do
+      {:ok, room_state} when room_state > 2 ->
+        broadcast!(socket, "duel_start", "start")
+
+      _ ->
+        broadcast!(socket, "duel_start", "reject")
+    end
+
     {:noreply, socket}
   end
 

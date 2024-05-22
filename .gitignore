@@ -35,5 +35,8 @@ alternativeServer-*.tar
 npm-debug.log
 /assets/node_modules/
 
+# Ignore Redis dump file
+/data
+
 # Ignore env file
 .env
