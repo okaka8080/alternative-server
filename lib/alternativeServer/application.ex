@@ -17,7 +17,8 @@ defmodule AlternativeServer.Application do
       # Start a worker by calling: AlternativeServer.Worker.start_link(arg)
       # {AlternativeServer.Worker, arg},
       # Start to serve requests, typically the last entry
-      AlternativeServerWeb.Endpoint
+      AlternativeServerWeb.Endpoint,
+      {Redix, host: "redis", port: 6379, name: :redix}
     ]
 
     # See https://hexdocs.pm/elixir/Supervisor.html
