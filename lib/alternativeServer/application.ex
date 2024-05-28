@@ -18,7 +18,7 @@ defmodule AlternativeServer.Application do
       # {AlternativeServer.Worker, arg},
       # Start to serve requests, typically the last entry
       AlternativeServerWeb.Endpoint,
-      {Redix, host: "localhost", port: 6379, name: :redix}
+      {Redix, host: "redis", port: 6379, name: :redix}
     ]
 
     # See https://hexdocs.pm/elixir/Supervisor.html

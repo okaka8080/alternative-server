@@ -1,9 +1,11 @@
 defmodule AlternativeServer.Redis do
+  require Logger
+
   @doc """
   Redis用関数
   """
   def conn() do
-    {:ok, conn} = Redix.start_link(host: "localhost", port: 6380)
+    {:ok, conn} = Redix.start_link(host: "redis", port: 6379)
     conn
   end
 
@@ -15,6 +17,11 @@ defmodule AlternativeServer.Redis do
   def get(key) do
     conn = conn()
     Redix.command(conn, ["GET", key])
+  end
+
+  def del(key) do
+    conn = conn()
+    Redix.command(conn, ["DEL", key])
   end
 
   def incr(key) do

@@ -4,6 +4,7 @@ defmodule AlternativeServerWeb.V1.RoomController do
   alias AlternativeServer.Accounts
   alias AlternativeServer.Room
   alias AlternativeServer.UsersRoom
+  alias AlternativeServer.Redis
   require Logger
 
   def getAll(conn, _params) do
@@ -60,9 +61,12 @@ defmodule AlternativeServerWeb.V1.RoomController do
         if result = Room.update_room(room, %{joined_users: room.joined_users + 1}) do
           {:ok, new_room} = result
           UsersRoom.create_users_rooms(new_room, user)
+          host = Accounts.get_user!(new_room.owner_id)
 
           json(conn, %{
             id: new_room.id,
+            host_user_id: new_room.owner_id,
+            host_user_name: host.name,
             user_count: new_room.joined_users
           })
         else
@@ -88,6 +92,7 @@ defmodule AlternativeServerWeb.V1.RoomController do
           if users_room = UsersRoom.get_users_room_by_user_id(user.id) do
             UsersRoom.delete_users_room(users_room)
             Room.delete_room(room)
+            Redis.del("room_state_#{room.id}")
 
             json(conn, %{
               id: room.id,
