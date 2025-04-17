@@ -17,10 +17,9 @@ defmodule AlternativeServerWeb.RoomChannel do
     case authenticate(params) do
       {:ok, user} ->
         # Redisのルーム初期化
-        Redis.setnx("room:#{private_room_id}:lobby:readyCount", "0")
+        Redis.lpush("room:#{private_room_id}:members", user.id)
         send(self(), {:after_join, %{user_id: user.id, user_name: user.name}})
         {:ok, assign(socket, :user_assign, %{user: user, room_id: private_room_id})}
-
       _ ->
         {:error, %{reason: "unauthorized"}}
     end
@@ -96,28 +95,33 @@ defmodule AlternativeServerWeb.RoomChannel do
     Logger.info(socket.assigns.user_assign.room_id)
 
     if status == true do
-      {:ok, number} = Redis.incr("room:#{socket.assigns.user_assign.room_id}:lobby:readyCount")
-      Logger.info("incr to #{number}")
+      # {:ok, number} = Redis.incr("room:#{socket.assigns.user_assign.room_id}:lobby:is_ready")
+      Redis.set("room:#{socket.assigns.user_assign.room_id}:lobby:#{user_id}:is_ready", "true")
     else
-      Redis.decr("room:#{socket.assigns.user_assign.room_id}:lobby:readyCount")
+      Redis.set("room:#{socket.assigns.user_assign.room_id}:lobby:#{user_id}:is_ready", "false")
     end
 
-    case Redis.get("room:#{socket.assigns.user_assign.room_id}:lobby:readyCount") do
-      {:ok, readyCount} when readyCount == "2" ->
-        Logger.info("readyCount is 2")
-        broadcast!(socket, "duel_start", %{status: true})
-        Redis.set("room:#{socket.assigns.user_assign.room_id}:lobby:readyCount", "0")
-        {:noreply, socket}
+    case get_room_members(socket.assigns.user_assign.room_id) do
+      {:ok, [user1, user2]} ->
+        # 両プレイヤーの is_ready 状態を確認
+        with {:ok, is_ready1} <- Redis.get("room:#{socket.assigns.user_assign.room_id}:lobby:#{user1}:is_ready"),
+             {:ok, is_ready2} <- Redis.get("room:#{socket.assigns.user_assign.room_id}:lobby:#{user2}:is_ready"),
+             true <- is_ready1 == "true" and is_ready2 == "true" do
+          Logger.info("Both players are ready. Broadcasting duel_start.")
+          broadcast!(socket, "duel_start", %{status: true})
 
-      {:ok, readyCount} when readyCount != "2" ->
-        Logger.info("readyCount is not 2, it's #{readyCount}")
-        broadcast!(socket, "duel_start", %{status: false})
-        {:noreply, socket}
+          # is_ready 状態をリセット
+          Redis.set("room:#{socket.assigns.user_assign.room_id}:lobby:#{user1}:is_ready", "false")
+          Redis.set("room:#{socket.assigns.user_assign.room_id}:lobby:#{user2}:is_ready", "false")
+        else
+          _ ->
+            Logger.info("One or both players are not ready.")
+            broadcast!(socket, "duel_start", %{status: false})
+        end
 
       _ ->
-        Logger.info("did not receive {:ok, readyCount} tuple")
+        Logger.error("Failed to fetch room members.")
         broadcast!(socket, "duel_start", %{status: false})
-        {:noreply, socket}
     end
   end
 
@@ -128,7 +132,7 @@ defmodule AlternativeServerWeb.RoomChannel do
     # TODO セッション管理追加
 
     # ルームの初期化
-    Redis.lpush("room:#{room_id}:members", user_id)
+
     Redis.hset("room:#{room_id}:game:state", "turn", 1)
     Redis.hset("room:#{room_id}:game:state", "phase", 0)
     Redis.hset("room:#{room_id}:game:state", "phase_state", 0)
