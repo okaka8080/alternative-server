@@ -39,6 +39,49 @@ defmodule AlternativeServerWeb.RoomChannel do
     end
   end
 
+  defp get_room_members(room_id) do
+    case Redis.lrange("room:#{room_id}:members", 0, -1) do
+      {:ok, members} when length(members) == 2 -> {:ok, members}
+      _ -> {:error, "Invalid members or count"}
+    end
+  end
+
+  defp all_players_waiting?(room_id, members) do
+    Enum.all?(members, fn user_id ->
+      case Redis.get("room:#{room_id}:game:#{user_id}:is_wait") do
+        {:ok, "true"} -> true
+        _ -> false
+      end
+    end)
+  end
+
+  # ヘルパー関数: フィールド情報を取得
+  defp get_field_positions(room_id, user_id) do
+    for pos <- 1..9, into: %{} do
+      case Redis.hgetall("room:#{room_id}:game:#{user_id}:field:#{pos}") do
+        {:ok, pos_value} ->
+          map = Functions.list_to_map(pos_value)
+          {"pos#{pos}", map}
+
+        _ ->
+          nil
+      end
+    end
+    |> Enum.reject(&is_nil/1)
+    |> Enum.into(%{})
+  end
+
+  # ヘルパー関数: フィールドに `is_close` があるか確認
+  defp has_inclose?(pos_map) do
+    Enum.any?(pos_map, fn {_key, value} ->
+      if map_size(value) > 0 do
+        value["is_close"] == "true"
+      else
+        false
+      end
+    end)
+  end
+
   def handle_in("new_msg", %{"body" => body}, socket) do
     broadcast!(socket, "new_msg", %{body: body})
     {:noreply, socket}
@@ -78,45 +121,62 @@ defmodule AlternativeServerWeb.RoomChannel do
     end
   end
 
+  # デュエルセッション開始
   def handle_in("finish_ready", %{"user_id" => user_id}, socket) do
     Logger.info("this user is #{user_id}")
-    Redis.incr("room:#{socket.assigns.user_assign.room_id}:game:transitionCount")
-    Redis.lpush("room:#{socket.assigns.user_assign.room_id}:members", user_id)
-    Redis.set("room:#{socket.assigns.user_assign.room_id}:game:currentTurn", 1)
-    Redis.set("room:#{socket.assigns.user_assign.room_id}:game:currentPhase", 0)
-    Redis.set("room:#{socket.assigns.user_assign.room_id}:game:phaseState", 0)
+    room_id = socket.assigns.user_assign.room_id
+    # TODO セッション管理追加
+
+    # ルームの初期化
+    Redis.lpush("room:#{room_id}:members", user_id)
+    Redis.hset("room:#{room_id}:game:state", "turn", 1)
+    Redis.hset("room:#{room_id}:game:state", "phase", 0)
+    Redis.hset("room:#{room_id}:game:state", "phase_state", 0)
+
+    # ゲームの初期化
+    Redis.hset("room:#{room_id}:game:#{user_id}:status", "sp", 5)
+    # TODO: LPはデッキの値から取得してくる
+    Redis.hset("room:#{room_id}:game:#{user_id}:status", "lp", 7)
+    # TODO: apを初期化
+
+    Redis.set("room:#{room_id}:game:#{user_id}:status:set_card", 0)
+    Redis.set("room:#{room_id}:game:#{user_id}:status:next_card", 0)
+
+    # プレイヤーを待機状態に遷移
+    Redis.set("room:#{room_id}:game:#{user_id}:is_wait", "true")
     {:noreply, socket}
   end
 
+  # セットフェイズ：カード選択
   def handle_in("select_card", %{"user_id" => user_id} = params, socket) do
+    # 各種値を取得
     ap = Map.get(params, "ap", nil)
     sp = Map.get(params, "sp", nil)
     card_id = Map.get(params, "card_id", nil)
     room_id = socket.assigns.user_assign.room_id
+
     Logger.info("#{user_id}, #{card_id}, #{ap}, #{sp}")
 
-    Redis.set("room:#{room_id}:game:#{user_id}:sp", sp)
-
-    # Redis.set("room:#{room_id}:game:#{user_id}:ap", ap)
-
+    # Redisに保存
+    Redis.hset("room:#{room_id}:game:#{user_id}:status", "sp", sp)
+    # TODO: APの値保存方法 要検討
     Enum.each(ap, fn x ->
-      Redis.rpush("room:#{room_id}:game:#{user_id}:ap", x)
+      Redis.rpush("room:#{room_id}:game:#{user_id}:status:ap", x)
     end)
+    Redis.set("room:#{room_id}:game:#{user_id}:status:set_card", card_id)
 
-    # Redis.lpush("room:#{room_id}:game:#{user_id}:ap", ap[0])
-
-    Redis.set("room:#{room_id}:game:#{user_id}:setCard", card_id)
-    Redis.setnx("room:#{room_id}:game:selectCardCount", 0)
-    Redis.incr("room:#{room_id}:game:selectCardCount")
+    # プレイヤーを待機状態に遷移
+    Redis.set("room:#{room_id}:game:#{user_id}:is_wait", "true")
     {:noreply, socket}
   end
 
+  # セットフェイズ：カード配置
   def handle_in("set_card", %{"user_id" => user_id, "set_pos" => set_pos}, socket) do
-    # user_idからsetしてるカードを取得して配置
     room_id = socket.assigns.user_assign.room_id
-    {:ok, set_card} = Redis.get("room:#{room_id}:game:#{user_id}:setCard")
-
+    # Redisからカード情報を取得
+    {:ok, set_card} = Redis.get("room:#{room_id}:game:#{user_id}:status:set_card")
     Logger.info("set card is #{set_card}")
+    # TODO: カードの情報を取得
 
     card_data = %{
       card_id: set_card,
@@ -134,65 +194,62 @@ defmodule AlternativeServerWeb.RoomChannel do
     IO.inspect(card_data, label: "Card Data")
 
     Redis.hset(
-      "room:#{room_id}:game:#{user_id}:fieldCards:#{set_pos}",
+      "room:#{room_id}:game:#{user_id}:field:#{set_pos}",
       "card_id",
       card_data.card_id
     )
 
     Redis.hset(
-      "room:#{room_id}:game:#{user_id}:fieldCards:#{set_pos}",
+      "room:#{room_id}:game:#{user_id}:field:#{set_pos}",
       "is_active",
       card_data.is_active
     )
 
     Redis.hset(
-      "room:#{room_id}:game:#{user_id}:fieldCards:#{set_pos}",
+      "room:#{room_id}:game:#{user_id}:field:#{set_pos}",
       "is_close",
       card_data.is_close
     )
 
     # 次のターンのセットカードを保存
-    # Redis.hset(
-    #   "room:#{room_id}:game:#{user_id}:nextSetCard",
-    #   "user_id",
-    #   user_id
-    # )
-
     Redis.hset(
-      "room:#{room_id}:game:#{user_id}:nextSetCard",
+      "room:#{room_id}:game:#{user_id}:status:next_card",
       "card_id",
       set_card
     )
-
     Redis.hset(
-      "room:#{room_id}:game:#{user_id}:nextSetCard",
+      "room:#{room_id}:game:#{user_id}:status:next_card",
       "set_pos",
       set_pos
     )
 
-    Redis.setnx("room:#{room_id}:game:setCardCount", 0)
-    Redis.incr("room:#{room_id}:game:setCardCount")
-    Redis.set("room:#{room_id}:game:#{user_id}:setCard", 0)
-    IO.puts("Card data set successfully")
+    # プレイヤーを待機状態に遷移
+    Redis.set("room:#{room_id}:game:#{user_id}:is_wait", "true")
+    # set_cardを初期化
+    Redis.set("room:#{room_id}:game:#{user_id}:status:set_card", 0)
 
+    IO.puts("Card data set successfully")
     {:noreply, socket}
   end
 
   def handle_in("open_skill_end", %{"user_id" => user_id}, socket) do
     Logger.info("this user is #{user_id}")
-    Redis.incr("room:#{socket.assigns.user_assign.room_id}:game:openSkillEndCount")
+    room_id = socket.assigns.user_assign.room_id
+    Redis.set("room:#{room_id}:game:#{user_id}:is_wait", "true")
     {:noreply, socket}
   end
 
   def handle_in("open_phase_end", %{"user_id" => user_id}, socket) do
-    Logger.info("this user is #{user_id}")
-    Redis.incr("room:#{socket.assigns.user_assign.room_id}:game:openPhaseEndCount")
+    room_id = socket.assigns.user_assign.room_id
+    Redis.set("room:#{room_id}:game:#{user_id}:is_wait", "true")
     {:noreply, socket}
   end
 
   def handle_in("check_wait", %{"type" => type}, socket) do
     room_id = socket.assigns.user_assign.room_id
-    {:ok, current_turn} = Redis.get("room:#{room_id}:game:currentTurn")
+    {:ok, turn} = Redis.hget("room:#{room_id}:game:state", "turn")
+    {:ok, phase} = Redis.hget("room:#{room_id}:game:state", "phase")
+    {:ok, phase_state} = Redis.hget("room:#{room_id}:game:state", "phase_state")
     Logger.info("check_start")
 
     case type do
@@ -200,189 +257,132 @@ defmodule AlternativeServerWeb.RoomChannel do
         # 準備完了
         Logger.info("check to finish_ready")
 
-        case Redis.get("room:#{room_id}:game:transitionCount") do
-          {:ok, result} when result == "2" ->
-            Logger.info("transitionCount is 2")
-            broadcast(socket, "transition", %{status: true})
-            Redis.set("room:#{room_id}:game:transitionCount", 0)
-            {:noreply, socket}
-
+        with {:ok, members} <- get_room_members(room_id),
+           true <- all_players_waiting?(room_id, members) do
+          Logger.info("Both players are ready. Broadcasting transition.")
+          broadcast(socket, "transition", %{status: true})
+        else
           _ ->
-            Logger.info("transition failed")
+            Logger.info("Players are not ready or failed to fetch members.")
             broadcast(socket, "transition", %{status: false})
-            {:noreply, socket}
         end
 
+        {:noreply, socket}
       1 ->
         # セットフェイズ・カードセット
         Logger.info("check to select_card")
 
-        case Redis.get("room:#{room_id}:game:selectCardCount") do
-          {:ok, result} when result == "2" ->
-            Logger.info("selectCardCount is 2")
+        case get_room_members(room_id) do
+          {:ok, [id1, id2]} ->
+            if all_players_waiting?(room_id, [id1, id2]) do
+              Logger.info("Both players have selected cards.")
 
-            case Redis.lrange("room:#{room_id}:members", 0, 1) do
-              {:ok, members} ->
-                id1 = Enum.at(members, 0)
-                id2 = Enum.at(members, 1)
+              # 各プレイヤーのカード情報を取得
+              {:ok, sp1} = Redis.hget("room:#{room_id}:game:#{id1}:status", "sp")
+              {:ok, ap1} = Redis.lrange("room:#{room_id}:game:#{id1}:status:ap", 0, -1)
+              {:ok, card1} = Redis.get("room:#{room_id}:game:#{id1}:status:set_card")
 
-                # sp,ap,card情報を取得
-                {:ok, sp1} = Redis.get("room:#{room_id}:game:#{id1}:sp")
-                {:ok, ap1} = Redis.lrange("room:#{room_id}:game:#{id1}:ap", 0, 3)
-                {:ok, card1} = Redis.get("room:#{room_id}:game:#{id1}:setCard")
-                {:ok, sp2} = Redis.get("room:#{room_id}:game:#{id2}:sp")
-                {:ok, ap2} = Redis.lrange("room:#{room_id}:game:#{id2}:ap", 0, 3)
-                {:ok, card2} = Redis.get("room:#{room_id}:game:#{id2}:setCard")
+              {:ok, sp2} = Redis.hget("room:#{room_id}:game:#{id2}:status", "sp")
+              {:ok, ap2} = Redis.lrange("room:#{room_id}:game:#{id2}:status:ap", 0, -1)
+              {:ok, card2} = Redis.get("room:#{room_id}:game:#{id2}:status:set_card")
 
-                data1 = %{
-                  user_id: id1,
-                  card_id: card1,
-                  sp: sp1,
-                  ap: ap1
-                }
+              # データ構造を作成
+              data1 = %{
+                user_id: id1,
+                card_id: card1,
+                sp: sp1,
+                ap: ap1
+              }
 
-                data2 = %{
-                  user_id: id2,
-                  card_id: card2,
-                  sp: sp2,
-                  ap: ap2
-                }
+              data2 = %{
+                user_id: id2,
+                card_id: card2,
+                sp: sp2,
+                ap: ap2
+              }
 
-                broadcast(socket, "cardSelect", %{
-                  status: true,
-                  user1: data1,
-                  user2: data2,
-                  first_user_id: id1
-                })
+              # カード選択完了をクライアントに通知
+              broadcast(socket, "cardSelect", %{
+                status: true,
+                user1: data1,
+                user2: data2,
+                first_user_id: id1
+              })
 
-                # カウントリセット
-                Redis.set("room:#{room_id}:game:selectCardCount", 0)
+              # 両プレイヤーの `is_wait` をリセット
+              Redis.set("room:#{room_id}:game:#{id1}:is_wait", "false")
+              Redis.set("room:#{room_id}:game:#{id2}:is_wait", "false")
 
-                {:noreply, socket}
+              {:noreply, socket}
+            else
+              Logger.info("Players are not ready or failed to fetch is_wait status.")
+              broadcast(socket, "cardSelect", %{status: false})
+              {:noreply, socket}
             end
 
+          _ ->
+            Logger.info("Failed to fetch room members or invalid member count.")
+            broadcast(socket, "cardSelect", %{status: false})
             {:noreply, socket}
 
-          _ ->
-            Logger.info("set_card failed")
-            broadcast(socket, "cardSelect", %{status: false, data: nil})
-            {:noreply, socket}
+        {:noreply, socket}
         end
 
       2 ->
         #  セットフェイズ・配置
         Logger.info("check to set card position")
 
-        Logger.info("current turn is #{current_turn}")
+        case get_room_members(room_id) do
+          {:ok, [id1, id2]} ->
+            if all_players_waiting?(room_id, [id1, id2]) do
+              # 両プレイヤーのフィールド情報を取得
+              pos_map_1 = get_field_positions(room_id, id1)
+              pos_map_2 = get_field_positions(room_id, id2)
 
-        case Redis.get("room:#{room_id}:game:setCardCount") do
-          {:ok, result} when result == "2" ->
-            Logger.info("setCardCount is 2")
+              # 次に配置するカード情報を取得
+              {:ok, entry_card1} = Redis.hgetall("room:#{room_id}:game:#{id1}:next_card")
+              {:ok, entry_card2} = Redis.hgetall("room:#{room_id}:game:#{id2}:next_card")
 
-            case Redis.lrange("room:#{room_id}:members", 0, 1) do
-              {:ok, members} ->
-                id1 = Enum.at(members, 0)
-                id2 = Enum.at(members, 1)
-                pos_map_1 =
-                  for pos <- 1..9, into: %{} do
-                    case Redis.hgetall("room:#{room_id}:game:#{id1}:fieldCards:#{pos}") do
-                      {:ok, pos_value} ->
-                        map = Functions.list_to_map(pos_value)
-                        {"pos#{pos}", map}
+              # フィールドに `is_close` があるか確認
+              has_inclose1 = has_inclose?(pos_map_1)
+              has_inclose2 = has_inclose?(pos_map_2)
 
-                      _ ->
-                        nil
-                    end
-                  end
-                  |> Enum.reject(&is_nil/1)
-                  |> Enum.into(%{})
+              if has_inclose1 || has_inclose2 do
+                # 蘇生フェイズに移行
+                user1 = %{user_id: id1, is_close: has_inclose1}
+                user2 = %{user_id: id2, is_close: has_inclose2}
 
-                IO.puts(inspect(pos_map_1))
+                broadcast(socket, "revivalPhaseStart", %{
+                  status: true,
+                  user1: user1,
+                  user2: user2,
+                  next_state: 2
+                })
+              else
+                # カード情報を送信
+                field1 = %{user_id: id1, pos: pos_map_1, new_entry_card: entry_card1}
+                field2 = %{user_id: id2, pos: pos_map_2, new_entry_card: entry_card2}
 
-                {:ok, entry_card1} = Redis.hgetall("room:#{room_id}:game:#{id1}:nextSetCard")
+                Logger.info("field_1 is #{inspect(field1)}")
+                Logger.info("field_2 is #{inspect(field2)}")
 
-                pos_map_2 =
-                  for pos <- 1..9, into: %{} do
-                    case Redis.hgetall("room:#{room_id}:game:#{id2}:fieldCards:#{pos}") do
-                      {:ok, pos_value} ->
-                        map = Functions.list_to_map(pos_value)
-                        {"pos#{pos}", map}
+                broadcast(socket, "startViewCards", %{
+                  status: true,
+                  field1: field1,
+                  field2: field2,
+                  next_state: 3
+                })
+              end
 
-                      _ ->
-                        nil
-                    end
-                  end
-                  |> Enum.reject(&is_nil/1)
-                  |> Enum.into(%{})
+              # 両プレイヤーの `is_wait` をリセット
+              Redis.set("room:#{room_id}:game:#{id1}:is_wait", "false")
+              Redis.set("room:#{room_id}:game:#{id2}:is_wait", "false")
 
-                IO.puts(inspect(pos_map_2))
-
-                {:ok, entry_card2} = Redis.hgetall("room:#{room_id}:game:#{id2}:nextSetCard")
-
-                has_inclose1 =
-                  Enum.any?(pos_map_1, fn {key, value} ->
-                    if map_size(value) > 0 do
-                      IO.puts("#{key} has is_close value: #{value[:is_close]}")
-                      value[:is_close] == true
-                    else
-                      IO.puts("#{key} is empty")
-                      false
-                    end
-                  end)
-
-                has_inclose2 =
-                  Enum.any?(pos_map_2, fn {key, value} ->
-                    if map_size(value) > 0 do
-                      IO.puts("#{key} has is_close value: #{value[:is_close]}")
-                      value[:is_close] == true
-                    else
-                      IO.puts("#{key} is empty")
-                      false
-                    end
-                  end)
-
-                # カウントリセット
-                Redis.set("room:#{room_id}:game:setCardCount", 0)
-
-                if has_inclose1 || has_inclose2 do
-                  # このタイミングで蘇生するフェイズに入るか送信する
-                  user1 = %{
-                    user_id: id1,
-                    is_close: has_inclose1
-                  }
-
-                  user2 = %{
-                    user_id: id2,
-                    is_close: has_inclose2
-                  }
-
-                  broadcast(socket, "revivalPhaseStart", %{status: true, user1: user1, user2: user2, next_state: 2})
-                  {:noreply, socket}
-                else
-                  # このタイミングでカードも送信する
-                  field1 = %{
-                    user_id: id1,
-                    pos: pos_map_1,
-                    new_entry_card: entry_card1
-                  }
-                  field2 = %{
-                    user_id: id2,
-                    pos: pos_map_2,
-                    new_entry_card: entry_card2
-                  }
-
-                  Logger.info("field_1 is #{inspect(field1)}")
-                  Logger.info("field_2 is #{inspect(field2)}")
-
-                  broadcast(socket, "startViewCards", %{status: true, field1: field1, field2: field2, next_state: 3})
-                  {:noreply, socket}
-                end
+              {:noreply, socket}
             end
-
-            {:noreply, socket}
-
           _ ->
-            Logger.info("setCardCount failed")
+            Logger.info("Players are not ready or failed to fetch is_wait status.")
+            broadcast(socket, "startViewCards", %{status: false})
             {:noreply, socket}
         end
 
@@ -403,78 +403,51 @@ defmodule AlternativeServerWeb.RoomChannel do
         # オープン完了後待機処理
         Logger.info("check to openSkillEnd")
 
-        case Redis.get("room:#{room_id}:game:openSkillEndCount") do
-          {:ok, result} when result == "2" ->
-            Logger.info("openSkillEndCount is 2")
-
-          {:ok, result} when result == "1" ->
-            Logger.info("openSkillEndCount is 1")
-
-          # 相手の処理が完了している->自分の処理に変更
-
-          # カウントリセット
-          Redis.set("room:#{room_id}:game:openSkillEndCount", 0)
-
-          _ ->
-            Logger.info("openSkillEndCount failed")
-            {:noreply, socket}
-        end
-
       6 ->
         # オープン完了後待機処理
         Logger.info("check to openPhaseEnd")
 
-        case Redis.get("room:#{room_id}:game:openPhaseEndCount") do
-          {:ok, result} when result == "2" ->
-            Logger.info("openPhaseEndCount is 2")
+        with {:ok, [id1, id2]} <- get_room_members(room_id),
+           true <- all_players_waiting?(room_id, [id1, id2]) do
 
-            # フィールドのカードの枚数を取得 ->　お互い0ならアクションフェイズスキップ
-            case Redis.lrange("room:#{room_id}:members", 0, 1) do
-              {:ok, members} ->
-                # id1 = Enum.at(members, 0)
-                # id2 = Enum.at(members, 1)
+             # フィールドのカードの枚数を取得 ->　お互い0ならアクションフェイズスキップ
 
-                if String.to_integer(current_turn) == 1 do
-                  Logger.info("next phase is turn end")
-                  DuelSystem.change_turn(room_id)
-                  # カウントリセット
-                  Redis.set("room:#{room_id}:game:openPhaseEndCount", 0)
-                  broadcast(socket, "turnEnd", %{status: true})
-                  {:noreply, socket}
-                else
-                  Logger.info("next phase is action phase")
+             if String.to_integer(turn) == 1 do
+              Logger.info("next phase is turn end")
+              DuelSystem.change_turn(room_id)
+              # プレイヤーの `is_wait` をリセット
+              Redis.set("room:#{room_id}:game:#{id1}:is_wait", "false")
+              Redis.set("room:#{room_id}:game:#{id2}:is_wait", "false")
 
-                  # カウントリセット
-                  Redis.set("room:#{room_id}:game:openPhaseEndCount", 0)
+              broadcast(socket, "turnEnd", %{status: true})
+              {:noreply, socket}
+            else
+              Logger.info("next phase is action phase")
 
-                  broadcast(socket, "openPhaseEnd", %{status: true})
-                  {:noreply, socket}
-                end
+              # プレイヤーの `is_wait` をリセット
+              Redis.set("room:#{room_id}:game:#{id1}:is_wait", "false")
+              Redis.set("room:#{room_id}:game:#{id2}:is_wait", "false")
+
+              broadcast(socket, "openPhaseEnd", %{status: true})
+              {:noreply, socket}
             end
-
-            # Redis.set("room:#{room_id}:game:transitionCount", "0")
-            {:noreply, socket}
-
+        else
           _ ->
-            Logger.info("openPhaseEndCount failed")
-            {:noreply, socket}
+            Logger.info("Players are not ready or failed to fetch members.")
+            broadcast(socket, "openPhaseEnd", %{status: false})
         end
 
       7 ->
         #  アクションフェイズ
         Logger.info("check to set card position")
 
-        case Redis.get("room:#{room_id}:game:setCardCount") do
-          {:ok, result} when result == "2" ->
-            Logger.info("setCardCount is 2")
-
-            # この辺やる
-
-            {:noreply, socket}
-
+        with {:ok, members} <- get_room_members(room_id),
+           true <- all_players_waiting?(room_id, members) do
+            broadcast(socket, "actionPhaseEnd", %{status: true})
+        else
           _ ->
-            Logger.info("action phase failed")
-            {:noreply, socket}
+            Logger.info("Players are not ready or failed to fetch members.")
+            broadcast(socket, "actionPhaseEnd", %{status: false})
         end
 
         {:noreply, socket}
