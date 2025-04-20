@@ -25,15 +25,20 @@ defmodule AlternativeServer.DuelSystem do
 
   def hset_newCard(room_id, player_id, card_data) do
     position = card_data["set_pos"]
+
     Redis.hset(
-    "room:#{room_id}:game:#{player_id}:field:#{position}",
-    %{
-      "card_id" => card_data["card_id"],
-      "is_active" => card_data["is_active"],
-      "is_close" => card_data["is_close"]
-      # TODO: 他のカードデータも後ほど追加
-    }
-  )
+      "room:#{room_id}:game:#{player_id}:field:#{position}",
+      %{
+        "card_id" => card_data["card_id"],
+        "is_active" => card_data["is_active"],
+        "is_close" => card_data["is_close"],
+        "hp" => card_data["hp"],
+        "level" => card_data["level"],
+        "attack" => card_data["attack"],
+        "speed" => card_data["speed"],
+        "range" => card_data["range"]
+      }
+    )
   end
 
   def change_phase(turn_id) do
