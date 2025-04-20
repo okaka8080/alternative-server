@@ -69,9 +69,24 @@ defmodule AlternativeServer.Redis do
     Redix.command(conn, ["HGETALL", key])
   end
 
+  # 1フィールド用
   def hset(key, field, data) do
     conn = conn()
     case Redix.command(conn, ["HSET", key, field, data]) do
+      {:ok, response} ->
+        IO.puts("HSET successful: #{response}")
+        {:ok, response}
+      {:error, reason} ->
+        IO.puts("HSET failed: #{reason}")
+        {:error, reason}
+    end
+  end
+
+  # 複数フィールド用
+  def hset(key, map) when is_map(map) do
+    conn = conn()
+    kv_list = Enum.flat_map(map, fn {k, v} -> [to_string(k), to_string(v)] end)
+    case Redix.command(conn, ["HSET", key | kv_list]) do
       {:ok, response} ->
         IO.puts("HSET successful: #{response}")
         {:ok, response}
@@ -91,5 +106,16 @@ defmodule AlternativeServer.Redis do
     Redix.command(conn, ["HLEN", key])
   end
 
+  def hreset(key) do
+    conn = conn()
+    case Redix.command(conn, ["DEL", key]) do
+      {:ok, response} ->
+        IO.puts("HRESET successful: #{response}")
+        {:ok, response}
+      {:error, reason} ->
+        IO.puts("HRESET failed: #{reason}")
+        {:error, reason}
+    end
+  end
 
 end
