@@ -16,10 +16,16 @@ defmodule AlternativeServerWeb.RoomChannel do
   def join("room:" <> private_room_id, params, socket) do
     case authenticate(params) do
       {:ok, user} ->
-        # Redisのルーム初期化
-        Redis.lpush("room:#{private_room_id}:members", user.id)
+        # すでにメンバーに含まれていなければ追加する
+        {:ok, members} = Redis.lrange("room:#{private_room_id}:members", 0, -1)
+
+        unless user.id in members do
+          Redis.lpush("room:#{private_room_id}:members", user.id)
+        end
+
         send(self(), {:after_join, %{user_id: user.id, user_name: user.name}})
         {:ok, assign(socket, :user_assign, %{user: user, room_id: private_room_id})}
+
       _ ->
         {:error, %{reason: "unauthorized"}}
     end
@@ -90,12 +96,10 @@ defmodule AlternativeServerWeb.RoomChannel do
     new_assign = Map.put(socket.assigns.user_assign, "status", status)
     socket = assign(socket, :user_assign, new_assign)
     broadcast!(socket, "set_ready", %{user_id: user_id, status: status})
-    {:noreply, socket}
     Logger.info("message from: #{user_id}")
     Logger.info(socket.assigns.user_assign.room_id)
 
     if status == true do
-      # {:ok, number} = Redis.incr("room:#{socket.assigns.user_assign.room_id}:lobby:is_ready")
       Redis.set("room:#{socket.assigns.user_assign.room_id}:lobby:#{user_id}:is_ready", "true")
     else
       Redis.set("room:#{socket.assigns.user_assign.room_id}:lobby:#{user_id}:is_ready", "false")
@@ -104,8 +108,10 @@ defmodule AlternativeServerWeb.RoomChannel do
     case get_room_members(socket.assigns.user_assign.room_id) do
       {:ok, [user1, user2]} ->
         # 両プレイヤーの is_ready 状態を確認
-        with {:ok, is_ready1} <- Redis.get("room:#{socket.assigns.user_assign.room_id}:lobby:#{user1}:is_ready"),
-             {:ok, is_ready2} <- Redis.get("room:#{socket.assigns.user_assign.room_id}:lobby:#{user2}:is_ready"),
+        with {:ok, is_ready1} <-
+               Redis.get("room:#{socket.assigns.user_assign.room_id}:lobby:#{user1}:is_ready"),
+             {:ok, is_ready2} <-
+               Redis.get("room:#{socket.assigns.user_assign.room_id}:lobby:#{user2}:is_ready"),
              true <- is_ready1 == "true" and is_ready2 == "true" do
           Logger.info("Both players are ready. Broadcasting duel_start.")
           broadcast!(socket, "duel_start", %{status: true})
@@ -123,6 +129,8 @@ defmodule AlternativeServerWeb.RoomChannel do
         Logger.error("Failed to fetch room members.")
         broadcast!(socket, "duel_start", %{status: false})
     end
+
+    {:noreply, socket}
   end
 
   # デュエルセッション開始
@@ -144,7 +152,6 @@ defmodule AlternativeServerWeb.RoomChannel do
     # TODO: apを初期化
 
     Redis.set("room:#{room_id}:game:#{user_id}:status:set_card", 0)
-    Redis.set("room:#{room_id}:game:#{user_id}:status:next_card", 0)
 
     # プレイヤーを待機状態に遷移
     Redis.set("room:#{room_id}:game:#{user_id}:is_wait", "true")
@@ -167,6 +174,7 @@ defmodule AlternativeServerWeb.RoomChannel do
     Enum.each(ap, fn x ->
       Redis.rpush("room:#{room_id}:game:#{user_id}:status:ap", x)
     end)
+
     Redis.set("room:#{room_id}:game:#{user_id}:status:set_card", card_id)
 
     # プレイヤーを待機状態に遷移
@@ -197,34 +205,47 @@ defmodule AlternativeServerWeb.RoomChannel do
 
     IO.inspect(card_data, label: "Card Data")
 
+    # Redis.hset(
+    #   "room:#{room_id}:game:#{user_id}:field:#{set_pos}",
+    #   "card_id",
+    #   card_data.card_id
+    # )
+
+    # Redis.hset(
+    #   "room:#{room_id}:game:#{user_id}:field:#{set_pos}",
+    #   "is_active",
+    #   card_data.is_active
+    # )
+
+    # Redis.hset(
+    #   "room:#{room_id}:game:#{user_id}:field:#{set_pos}",
+    #   "is_close",
+    #   card_data.is_close
+    # )
+
+    # 次のターンのセットカードを保存
     Redis.hset(
-      "room:#{room_id}:game:#{user_id}:field:#{set_pos}",
+      "room:#{room_id}:game:#{user_id}:status:next_card",
+      "set_pos",
+      set_pos
+    )
+
+    Redis.hset(
+      "room:#{room_id}:game:#{user_id}:status:next_card",
       "card_id",
       card_data.card_id
     )
 
     Redis.hset(
-      "room:#{room_id}:game:#{user_id}:field:#{set_pos}",
+      "room:#{room_id}:game:#{user_id}:status:next_card",
       "is_active",
       card_data.is_active
     )
 
     Redis.hset(
-      "room:#{room_id}:game:#{user_id}:field:#{set_pos}",
+      "room:#{room_id}:game:#{user_id}:status:next_card",
       "is_close",
       card_data.is_close
-    )
-
-    # 次のターンのセットカードを保存
-    Redis.hset(
-      "room:#{room_id}:game:#{user_id}:status:next_card",
-      "card_id",
-      set_card
-    )
-    Redis.hset(
-      "room:#{room_id}:game:#{user_id}:status:next_card",
-      "set_pos",
-      set_pos
     )
 
     # プレイヤーを待機状態に遷移
@@ -261,9 +282,13 @@ defmodule AlternativeServerWeb.RoomChannel do
         # 準備完了
         Logger.info("check to finish_ready")
 
-        with {:ok, members} <- get_room_members(room_id),
-           true <- all_players_waiting?(room_id, members) do
+        with {:ok, [id1, id2]} <- get_room_members(room_id),
+             true <- all_players_waiting?(room_id, [id1, id2]) do
           Logger.info("Both players are ready. Broadcasting transition.")
+          # 両プレイヤーの `is_wait` をリセット
+          Redis.set("room:#{room_id}:game:#{id1}:is_wait", "false")
+          Redis.set("room:#{room_id}:game:#{id2}:is_wait", "false")
+
           broadcast(socket, "transition", %{status: true})
         else
           _ ->
@@ -272,6 +297,7 @@ defmodule AlternativeServerWeb.RoomChannel do
         end
 
         {:noreply, socket}
+
       1 ->
         # セットフェイズ・カードセット
         Logger.info("check to select_card")
@@ -329,7 +355,7 @@ defmodule AlternativeServerWeb.RoomChannel do
             broadcast(socket, "cardSelect", %{status: false})
             {:noreply, socket}
 
-        {:noreply, socket}
+            {:noreply, socket}
         end
 
       2 ->
@@ -343,9 +369,13 @@ defmodule AlternativeServerWeb.RoomChannel do
               pos_map_1 = get_field_positions(room_id, id1)
               pos_map_2 = get_field_positions(room_id, id2)
 
-              # 次に配置するカード情報を取得
-              {:ok, entry_card1} = Redis.hgetall("room:#{room_id}:game:#{id1}:next_card")
-              {:ok, entry_card2} = Redis.hgetall("room:#{room_id}:game:#{id2}:next_card")
+              # 配置フェイズでの取得部分
+              {:ok, entry_card1} = Redis.hgetall("room:#{room_id}:game:#{id1}:status:next_card")
+              {:ok, entry_card2} = Redis.hgetall("room:#{room_id}:game:#{id2}:status:next_card")
+
+              # ここでリスト→Mapに変換
+              entry_card1_map = Functions.list_to_map(entry_card1)
+              entry_card2_map = Functions.list_to_map(entry_card2)
 
               # フィールドに `is_close` があるか確認
               has_inclose1 = has_inclose?(pos_map_1)
@@ -364,8 +394,8 @@ defmodule AlternativeServerWeb.RoomChannel do
                 })
               else
                 # カード情報を送信
-                field1 = %{user_id: id1, pos: pos_map_1, new_entry_card: entry_card1}
-                field2 = %{user_id: id2, pos: pos_map_2, new_entry_card: entry_card2}
+                field1 = %{user_id: id1, pos: pos_map_1, entry_card: entry_card1_map}
+                field2 = %{user_id: id2, pos: pos_map_2, entry_card: entry_card2_map}
 
                 Logger.info("field_1 is #{inspect(field1)}")
                 Logger.info("field_2 is #{inspect(field2)}")
@@ -384,6 +414,7 @@ defmodule AlternativeServerWeb.RoomChannel do
 
               {:noreply, socket}
             end
+
           _ ->
             Logger.info("Players are not ready or failed to fetch is_wait status.")
             broadcast(socket, "startViewCards", %{status: false})
@@ -412,33 +443,46 @@ defmodule AlternativeServerWeb.RoomChannel do
         Logger.info("check to openPhaseEnd")
 
         with {:ok, [id1, id2]} <- get_room_members(room_id),
-           true <- all_players_waiting?(room_id, [id1, id2]) do
+             true <- all_players_waiting?(room_id, [id1, id2]) do
+          # エントリーカード取得
+          {:ok, entry_card1} = Redis.hgetall("room:#{room_id}:game:#{id1}:status:next_card")
+          {:ok, entry_card2} = Redis.hgetall("room:#{room_id}:game:#{id2}:status:next_card")
+          # ここでリスト→Mapに変換
+          entry_card1_map = Functions.list_to_map(entry_card1)
+          entry_card2_map = Functions.list_to_map(entry_card2)
+          # エントリーカードをフィールドに追加
+          DuelSystem.hset_newCard(room_id, id1, entry_card1_map)
+          DuelSystem.hset_newCard(room_id, id2, entry_card2_map)
+          # エントリーカードを初期化
+          Redis.hreset("room:#{room_id}:game:#{id1}:status:next_card")
+          Redis.hreset("room:#{room_id}:game:#{id2}:status:next_card")
 
-             # フィールドのカードの枚数を取得 ->　お互い0ならアクションフェイズスキップ
+          # フィールドのカードの枚数を取得 ->　お互い0ならアクションフェイズスキップ
 
-             if String.to_integer(turn) == 1 do
-              Logger.info("next phase is turn end")
-              DuelSystem.change_turn(room_id)
-              # プレイヤーの `is_wait` をリセット
-              Redis.set("room:#{room_id}:game:#{id1}:is_wait", "false")
-              Redis.set("room:#{room_id}:game:#{id2}:is_wait", "false")
+          if String.to_integer(turn) == 1 do
+            Logger.info("next phase is turn end")
+            DuelSystem.change_turn(room_id)
+            # プレイヤーの `is_wait` をリセット
+            Redis.set("room:#{room_id}:game:#{id1}:is_wait", "false")
+            Redis.set("room:#{room_id}:game:#{id2}:is_wait", "false")
 
-              broadcast(socket, "turnEnd", %{status: true})
-              {:noreply, socket}
-            else
-              Logger.info("next phase is action phase")
+            broadcast(socket, "turnEnd", %{status: true})
+            {:noreply, socket}
+          else
+            Logger.info("next phase is action phase")
 
-              # プレイヤーの `is_wait` をリセット
-              Redis.set("room:#{room_id}:game:#{id1}:is_wait", "false")
-              Redis.set("room:#{room_id}:game:#{id2}:is_wait", "false")
+            # プレイヤーの `is_wait` をリセット
+            Redis.set("room:#{room_id}:game:#{id1}:is_wait", "false")
+            Redis.set("room:#{room_id}:game:#{id2}:is_wait", "false")
 
-              broadcast(socket, "openPhaseEnd", %{status: true})
-              {:noreply, socket}
-            end
+            broadcast(socket, "openPhaseEnd", %{status: true})
+            {:noreply, socket}
+          end
         else
           _ ->
             Logger.info("Players are not ready or failed to fetch members.")
             broadcast(socket, "openPhaseEnd", %{status: false})
+            {:noreply, socket}
         end
 
       7 ->
@@ -446,8 +490,8 @@ defmodule AlternativeServerWeb.RoomChannel do
         Logger.info("check to set card position")
 
         with {:ok, members} <- get_room_members(room_id),
-           true <- all_players_waiting?(room_id, members) do
-            broadcast(socket, "actionPhaseEnd", %{status: true})
+             true <- all_players_waiting?(room_id, members) do
+          broadcast(socket, "actionPhaseEnd", %{status: true})
         else
           _ ->
             Logger.info("Players are not ready or failed to fetch members.")
