@@ -87,28 +87,27 @@ defmodule AlternativeServerWeb.RoomChannelGame do
 
     IO.inspect(card_data, label: "Card Data")
 
-    # 次のターンのセットカードを保存
     Redis.hset(
       "room:#{room_id}:game:#{user_id}:status:next_card",
       %{
         "set_pos" => set_pos,
-        "card_id" => card_data["card_id"],
-        "is_active" => card_data["is_active"],
-        "is_close" => card_data["is_close"],
-        "hp" => card_data["hp"],
-        "level" => card_data["level"],
-        "attack" => card_data["attack"],
-        "speed" => card_data["speed"],
-        "range" => card_data["range"]
+        "card_id" => card_data[:card_id],
+        "is_active" => card_data[:is_active],
+        "is_close" => card_data[:is_close],
+        "hp" => card_data[:hp],
+        "level" => card_data[:level],
+        "attack" => card_data[:attack],
+        "speed" => card_data[:speed],
+        "range" => card_data[:range]
       }
     )
+
+    Logger.info("Card data set successfully")
 
     # プレイヤーを待機状態に遷移
     Redis.set("room:#{room_id}:game:#{user_id}:is_wait", "true")
     # set_cardを初期化
     Redis.set("room:#{room_id}:game:#{user_id}:status:set_card", 0)
-
-    IO.puts("Card data set successfully")
     {:noreply, socket}
   end
 
@@ -139,15 +138,11 @@ defmodule AlternativeServerWeb.RoomChannelGame do
         with {:ok, [id1, id2]} <- RoomChannelHelpers.get_room_members(room_id),
              true <- RoomChannelHelpers.all_players_waiting?(room_id, [id1, id2]) do
           Logger.info("Both players are ready. Broadcasting transition.")
-          # 両プレイヤーの `is_wait` をリセット
-          Redis.set("room:#{room_id}:game:#{id1}:is_wait", "false")
-          Redis.set("room:#{room_id}:game:#{id2}:is_wait", "false")
-
           {:ok, :transition, %{status: true}}
         else
           _ ->
             Logger.info("Players are not ready or failed to fetch members.")
-            {:errror, :transition, %{status: false}}
+            {:error, :transition, %{status: false}}
         end
 
       1 ->
@@ -183,10 +178,6 @@ defmodule AlternativeServerWeb.RoomChannelGame do
                 ap: ap2
               }
 
-              # 両プレイヤーの `is_wait` をリセット
-              Redis.set("room:#{room_id}:game:#{id1}:is_wait", "false")
-              Redis.set("room:#{room_id}:game:#{id2}:is_wait", "false")
-
               # カード選択完了をクライアントに通知
               {:ok, :cardSelect,
                %{
@@ -197,12 +188,12 @@ defmodule AlternativeServerWeb.RoomChannelGame do
                }}
             else
               Logger.info("Players are not ready or failed to fetch is_wait status.")
-              {:errror, :cardSelect, %{status: false}}
+              {:error, :cardSelect, %{status: false}}
             end
 
           _ ->
             Logger.info("Failed to fetch room members or invalid member count.")
-            {:errror, :cardSelect, %{status: false}}
+            {:error, :cardSelect, %{status: false}}
         end
 
       2 ->
@@ -227,10 +218,6 @@ defmodule AlternativeServerWeb.RoomChannelGame do
               # フィールドに `is_close` があるか確認
               has_inclose1 = RoomChannelHelpers.has_inclose?(pos_map_1)
               has_inclose2 = RoomChannelHelpers.has_inclose?(pos_map_2)
-
-              # 両プレイヤーの `is_wait` をリセット
-              Redis.set("room:#{room_id}:game:#{id1}:is_wait", "false")
-              Redis.set("room:#{room_id}:game:#{id2}:is_wait", "false")
 
               if has_inclose1 || has_inclose2 do
                 # 蘇生フェイズに移行
@@ -261,11 +248,14 @@ defmodule AlternativeServerWeb.RoomChannelGame do
                    next_state: 3
                  }}
               end
+            else
+              Logger.info("Players are not ready or failed to fetch is_wait status.")
+              {:error, :startViewCards, %{status: false}}
             end
 
           _ ->
             Logger.info("Players are not ready or failed to fetch is_wait status.")
-            {:errror, :startViewCards, %{status: false}}
+            {:error, :startViewCards, %{status: false}}
         end
 
       3 ->
@@ -303,18 +293,9 @@ defmodule AlternativeServerWeb.RoomChannelGame do
           if String.to_integer(turn) == 1 do
             Logger.info("next phase is turn end")
             DuelSystem.change_turn(room_id)
-            # プレイヤーの `is_wait` をリセット
-            Redis.set("room:#{room_id}:game:#{id1}:is_wait", "false")
-            Redis.set("room:#{room_id}:game:#{id2}:is_wait", "false")
-
             {:ok, :turnEnd, %{status: true}}
           else
             Logger.info("next phase is action phase")
-
-            # プレイヤーの `is_wait` をリセット
-            Redis.set("room:#{room_id}:game:#{id1}:is_wait", "false")
-            Redis.set("room:#{room_id}:game:#{id2}:is_wait", "false")
-
             {:ok, :openPhaseEnd, %{status: true}}
           end
         else

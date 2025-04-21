@@ -83,4 +83,11 @@ defmodule AlternativeServerWeb.RoomChannelHelpers do
     end
   end
 
+  def reset_all_users_wait_status(room_id) do
+    # ルームのメンバーを取得
+    {:ok, [id1, id2]} = get_room_members(room_id)
+    # 両プレイヤーの `is_wait` をリセット
+    Redis.set("room:#{room_id}:game:#{id1}:is_wait", "false")
+    Redis.set("room:#{room_id}:game:#{id2}:is_wait", "false")
+  end
 end

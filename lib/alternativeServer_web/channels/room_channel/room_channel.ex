@@ -3,6 +3,7 @@ defmodule AlternativeServerWeb.RoomChannel do
   alias AlternativeServer.Accounts
   alias AlternativeServer.Redis
   alias AlternativeServerWeb.RoomChannelGame
+  alias AlternativeServerWeb.RoomChannelHelpers
   require Logger
 
   @doc """
@@ -70,6 +71,7 @@ defmodule AlternativeServerWeb.RoomChannel do
         Logger.error("Failed to fetch room members.")
         broadcast!(socket, "duel_start", %{status: false})
     end
+
     {:noreply, socket}
   end
 
@@ -98,9 +100,11 @@ defmodule AlternativeServerWeb.RoomChannel do
 
   def handle_in("check_wait", %{"type" => type}, socket) do
     room_id = socket.assigns.user_assign.room_id
+
     case RoomChannelGame.check_wait(type, room_id) do
       {:ok, event, payload} ->
         broadcast(socket, Atom.to_string(event), payload)
+        RoomChannelHelpers.reset_all_users_wait_status(room_id)
         {:noreply, socket}
 
       {:error, event, payload} ->
@@ -108,6 +112,7 @@ defmodule AlternativeServerWeb.RoomChannel do
         broadcast(socket, Atom.to_string(event), payload)
         {:noreply, socket}
     end
+
     {:noreply, socket}
   end
 
@@ -120,5 +125,4 @@ defmodule AlternativeServerWeb.RoomChannel do
   def terminate(_reason, socket) do
     broadcast!(socket, "user_left", %{user_id: socket.assigns.user_assign.user.id})
   end
-
 end
