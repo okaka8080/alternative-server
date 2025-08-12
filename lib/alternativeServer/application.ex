@@ -14,6 +14,10 @@ defmodule AlternativeServer.Application do
       {Phoenix.PubSub, name: AlternativeServer.PubSub},
       # Start the Finch HTTP client for sending emails
       {Finch, name: AlternativeServer.Finch},
+      # GameServer用のRegistry - プロセス名管理
+      {Registry, keys: :unique, name: AlternativeServer.GameRegistry},
+      # GameServer用のDynamicSupervisor - 動的プロセス管理
+      {DynamicSupervisor, strategy: :one_for_one, name: AlternativeServer.GameSupervisor},
       # Start a worker by calling: AlternativeServer.Worker.start_link(arg)
       # {AlternativeServer.Worker, arg},
       # Start to serve requests, typically the last entry
