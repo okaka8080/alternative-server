@@ -3,7 +3,6 @@ defmodule AlternativeServerWeb.RoomChannel do
   alias AlternativeServer.Accounts
   alias AlternativeServer.Redis
   alias AlternativeServerWeb.RoomChannelGame
-  alias AlternativeServerWeb.RoomChannelHelpers
   require Logger
 
   @doc """
@@ -98,23 +97,17 @@ defmodule AlternativeServerWeb.RoomChannel do
     RoomChannelGame.open_phase_end(params, socket)
   end
 
-  def handle_in("check_wait", %{"type" => type}, socket) do
-    room_id = socket.assigns.user_assign.room_id
-
-    case RoomChannelGame.check_wait(type, room_id) do
-      {:ok, event, payload} ->
-        broadcast(socket, Atom.to_string(event), payload)
-        RoomChannelHelpers.reset_all_users_wait_status(room_id)
-        {:noreply, socket}
-
-      {:error, event, payload} ->
-        Logger.error("check_wait error")
-        broadcast(socket, Atom.to_string(event), payload)
-        {:noreply, socket}
-    end
-
-    {:noreply, socket}
-  end
+  # =============================================================================
+  # 【削除】check_waitハンドラーは不要になりました
+  #
+  # 理由:
+  # - GameServerが自動でブロードキャストするため、手動チェックが不要
+  # - リアルタイムpush型に移行済み
+  # - クライアントからのcheck_wait呼び出しも不要
+  #
+  # 従来: クライアント → check_wait → ポーリング → ブロードキャスト
+  # 新仕様: プレイヤーアクション → GameServer → 自動ブロードキャスト
+  # =============================================================================
 
   def handle_info({:after_join, user}, socket) do
     broadcast(socket, "user_joined", user)
