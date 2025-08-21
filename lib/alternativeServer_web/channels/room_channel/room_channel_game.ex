@@ -66,9 +66,8 @@ defmodule AlternativeServerWeb.RoomChannelGame do
     # プレイヤーをGameServerに追加
     GameServer.add_player(room_id, user_id)
 
-    # Task.startを使って非同期でready状態を通知（推奨）
+    # Task.startを使って非同期でready状態を通知
     Task.start(fn ->
-      Process.sleep(100) # 少し待つ
       GameServer.player_action(room_id, user_id, :ready)
     end)
 
@@ -127,7 +126,6 @@ defmodule AlternativeServerWeb.RoomChannelGame do
 
     IO.inspect(card_data, label: "Card Data")
 
-    # 従来のRedis処理（とりあえず残しておく）
     Redis.hset(
       "room:#{room_id}:game:#{user_id}:status:next_card",
       %{

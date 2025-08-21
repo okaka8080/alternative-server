@@ -8,7 +8,7 @@ defmodule AlternativeServer.GameServerTest do
   require Logger
 
   def run_basic_test do
-    IO.puts("🎮 GameServer基本動作テスト開始!")
+    IO.puts("GameServer基本動作テスト開始")
     room_id = "test_room_#{:rand.uniform(1000)}"
 
     # 1. GameServer起動テスト
