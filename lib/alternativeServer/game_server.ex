@@ -15,6 +15,7 @@ defmodule AlternativeServer.Game.GameServer do
             fields: %{}
 
   @max_turns 100
+  # 最大ターン数。ゲームバランスのためデフォルトは100ですが、configファイルで変更可能です。
 
   # ====================
   # クライアントAPI (Channelから呼び出す)
@@ -451,8 +452,8 @@ defmodule AlternativeServer.Game.GameServer do
   defp summon_set_cards(state) do
     Logger.info("[#{state.room_id}] Starting summon_set_cards - current fields: #{inspect(state.fields)}")
 
-    # まず召喚イベントを作成
-    events =
+    # まず召喚イベントを作成（バリデーション付き）
+    {valid_events, errors} =
       for {player_id, field} <- state.fields,
           {position, card_data} <- field,
           card_data && Map.get(card_data, :status) == "set" do
@@ -460,52 +461,84 @@ defmodule AlternativeServer.Game.GameServer do
         Logger.info("[#{state.room_id}] Processing summon for player #{player_id}, position #{position}")
         Logger.info("[#{state.room_id}] Card data before summon: #{inspect(card_data)}")
 
-        # card_idが存在しない場合のデフォルト値として1を使用
-        # TODO: 本来はエラーハンドリングかバリデーションを追加すべき
-        # 現在はフォールバック値として基本カードID(1)を使用している
-        card_id_to_summon = card_data[:card_id] || card_data["card_id"] || 1
+        # card_idの存在チェック
+        card_id = card_data[:card_id] || card_data["card_id"]
 
-        Logger.info("[#{state.room_id}] Final card_id for summon: #{inspect(card_id_to_summon)}")
+        case card_id do
+          nil ->
+            error_msg = "Card ID is missing for player #{player_id} at position #{position}"
+            Logger.error("[#{state.room_id}] #{error_msg}")
+            {:error, %{player_id: player_id, position: position, reason: error_msg}}
 
-      summon_payload = %{
-        user_id: player_id,
-        position: position,
-        card_id: card_id_to_summon,
-        turn: state.turn
-      }
+          id when is_integer(id) and id > 0 ->
+            summon_payload = %{
+              user_id: player_id,
+              position: position,
+              card_id: id,
+              turn: state.turn
+            }
 
-      Logger.info("[#{state.room_id}] Summon payload: #{inspect(summon_payload)}")
+            Logger.info("[#{state.room_id}] Valid summon payload: #{inspect(summon_payload)}")
+            {:ok, %{event_type: "summon", payload: summon_payload}}
 
-      %{
-        event_type: "summon",
-        payload: summon_payload
-      }
-    end
-
-    # 召喚イベントをブロードキャスト
-    Logger.info("[#{state.room_id}] Broadcasting summon events count: #{length(events)}")
-    Logger.info("[#{state.room_id}] Broadcasting summon events: #{inspect(events)}")
-    broadcast(state.room_id, "event", %{events: events})
-
-    # 次に、fieldsのステータスを"set"から"active"に更新
-    new_fields =
-      for {player_id, field} <- state.fields, into: %{} do
-        updated_field =
-          for {position, card_data} <- field, into: %{} do
-            if card_data && Map.get(card_data, :status) == "set" do
-              # setステータスのカードをactiveに変更
-              updated_card = Map.put(card_data, :status, "active")
-              {position, updated_card}
-            else
-              # それ以外はそのまま
-              {position, card_data}
-            end
-          end
-
-        {player_id, updated_field}
+          invalid_id ->
+            error_msg = "Invalid card ID (#{inspect(invalid_id)}) for player #{player_id} at position #{position}"
+            Logger.error("[#{state.room_id}] #{error_msg}")
+            {:error, %{player_id: player_id, position: position, reason: error_msg}}
+        end
       end
+      |> Enum.split_with(fn {result, _} -> result == :ok end)
 
-    # 更新されたfieldsを返す
-    %{state | fields: new_fields}
+    # エラーがある場合の処理
+    unless Enum.empty?(errors) do
+      error_details = Enum.map(errors, fn {:error, details} -> details end)
+      Logger.error("[#{state.room_id}] Summon validation errors: #{inspect(error_details)}")
+
+      # エラー情報をクライアントに通知
+      broadcast(state.room_id, "game_error", %{
+        type: "summon_validation_failed",
+        errors: error_details,
+        turn: state.turn
+      })
+
+      # エラーがある場合は現在の状態をそのまま返す
+      state
+    else
+      # 有効なイベントのみを抽出
+      events = Enum.map(valid_events, fn {:ok, event} -> event end)
+
+      # 召喚イベントをブロードキャスト
+      Logger.info("[#{state.room_id}] Broadcasting valid summon events count: #{length(events)}")
+      Logger.info("[#{state.room_id}] Broadcasting summon events: #{inspect(events)}")
+      broadcast(state.room_id, "event", %{events: events})
+
+      # fieldsのステータスを"set"から"active"に更新（有効なカードのみ）
+      new_fields =
+        for {player_id, field} <- state.fields, into: %{} do
+          updated_field =
+            for {position, card_data} <- field, into: %{} do
+              if card_data && Map.get(card_data, :status) == "set" do
+                # card_idが有効な場合のみactiveに変更
+                card_id = card_data[:card_id] || card_data["card_id"]
+                if is_integer(card_id) and card_id > 0 do
+                  updated_card = Map.put(card_data, :status, "active")
+                  {position, updated_card}
+                else
+                  # 無効なcard_idの場合は削除するか、エラー状態にする
+                  Logger.warning("[#{state.room_id}] Removing invalid card at #{player_id}:#{position}")
+                  {position, nil}
+                end
+              else
+                # それ以外はそのまま
+                {position, card_data}
+              end
+            end
+
+          {player_id, updated_field}
+        end
+
+      # 更新されたfieldsを返す
+      %{state | fields: new_fields}
+    end
   end
 end
