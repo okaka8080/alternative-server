@@ -36,18 +36,24 @@ defmodule AlternativeServerWeb.RoomChannelGame do
     Logger.info("Channel topic: #{socket.topic}")
 
     # GameServerが起動していなければ起動
-    _start_result = case GameServerManager.start_game_server(room_id) do
-      {:ok, pid} when is_pid(pid) ->
-        Logger.info("GameServer started/found for room: #{room_id}, PID: #{inspect(pid)}")
-        :ok
-      {:ok, :already_started} ->
-        Logger.info("GameServer already running for room: #{room_id}")
-        :ok
-      {:error, reason} ->
-        Logger.error("Failed to start GameServer for room: #{room_id}, reason: #{inspect(reason)}")
-        # エラーの場合も処理を継続する
-        :error
-    end
+    _start_result =
+      case GameServerManager.start_game_server(room_id) do
+        {:ok, pid} when is_pid(pid) ->
+          Logger.info("GameServer started/found for room: #{room_id}, PID: #{inspect(pid)}")
+          :ok
+
+        {:ok, :already_started} ->
+          Logger.info("GameServer already running for room: #{room_id}")
+          :ok
+
+        {:error, reason} ->
+          Logger.error(
+            "Failed to start GameServer for room: #{room_id}, reason: #{inspect(reason)}"
+          )
+
+          # エラーの場合も処理を継続する
+          :error
+      end
 
     # 従来のRedis初期化処理（とりあえず残しておく）
     Redis.hset("room:#{room_id}:game:state", "turn", 1)
@@ -178,18 +184,16 @@ defmodule AlternativeServerWeb.RoomChannelGame do
     {:noreply, socket}
   end
 
-  # =============================================================================
-  # 【重要】check_wait関数は削除されました
-  # GenServerによるリアルタイム処理に置き換えられています
-  #
-  # 従来のポーリング処理:
-  # - 定期的にRedisをチェック
-  # - リソース消費が大きい
-  # - レスポンス遅延あり
-  #
-  # 新しいPush型処理:
-  # - プレイヤーアクション → GameServer → 即座にブロードキャスト
-  # - リアルタイム通知
-  # - 効率的なリソース使用
-  # =============================================================================
+  def action_card(%{"user_id" => user_id, "action_id" => action_id, "target" => target}, socket) do
+    room_id = socket.assigns.user_assign.room_id
+    Redis.set("room:#{room_id}:game:#{user_id}:is_wait", "true")
+
+    # GameServerにカードアクションを通知(アクションIDとターゲットを渡す)
+    GameServer.player_action(room_id, user_id, :action_select_end, %{
+      "action_id" => action_id,
+      "target" => target
+    })
+
+    {:noreply, socket}
+  end
 end

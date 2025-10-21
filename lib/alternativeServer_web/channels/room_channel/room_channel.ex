@@ -97,17 +97,10 @@ defmodule AlternativeServerWeb.RoomChannel do
     RoomChannelGame.open_phase_end(params, socket)
   end
 
-  # =============================================================================
-  # 【削除】check_waitハンドラーは不要になりました
-  #
-  # 理由:
-  # - GameServerが自動でブロードキャストするため、手動チェックが不要
-  # - リアルタイムpush型に移行済み
-  # - クライアントからのcheck_wait呼び出しも不要
-  #
-  # 従来: クライアント → check_wait → ポーリング → ブロードキャスト
-  # 新仕様: プレイヤーアクション → GameServer → 自動ブロードキャスト
-  # =============================================================================
+  # アクションフェイズ：カードアクション
+  def handle_in("action_card", params, socket) do
+    RoomChannelGame.action_card(params, socket)
+  end
 
   def handle_info({:after_join, user}, socket) do
     broadcast(socket, "user_joined", user)

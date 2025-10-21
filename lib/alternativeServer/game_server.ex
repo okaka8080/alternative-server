@@ -2,7 +2,7 @@ defmodule AlternativeServer.Game.GameServer do
   use GenServer
   require Logger
 
-  # このGenServerが持つ状態（State）を定義
+  # このGenServerが持つ状態(State)を定義
   @enforce_keys [:room_id]
   defstruct room_id: nil,
             # ゲームの現在のフェーズ
@@ -12,7 +12,9 @@ defmodule AlternativeServer.Game.GameServer do
             # %{player_id => %{ready: false, card: nil, ...}}
             players: %{},
             # %{player_id => %{1 => %{card_id: 1, hp: 100, name: "card_name", attack: 50, guard: 0, speed: 1, range: 1, status: "active"}, 2 => nil, 3 => nil...}}
-            fields: %{}
+            fields: %{},
+            # アクションフェーズの行動順キュー
+            action_queue: []
 
   @max_turns 100
   # 最大ターン数。ゲームバランスのためデフォルトは100ですが、configファイルで変更可能です。
@@ -151,7 +153,10 @@ defmodule AlternativeServer.Game.GameServer do
        }) do
     # 受け取ったデータをログ出力
     Logger.info("[#{state.room_id}] Player #{user_id} set_position - set_pos: #{set_pos}")
-    Logger.info("[#{state.room_id}] Player #{user_id} set_position - card_data: #{inspect(card_data)}")
+
+    Logger.info(
+      "[#{state.room_id}] Player #{user_id} set_position - card_data: #{inspect(card_data)}"
+    )
 
     # プレイヤーのカード配置情報を更新
     new_players =
@@ -166,14 +171,16 @@ defmodule AlternativeServer.Game.GameServer do
     card_id_atom = card_data[:card_id]
     card_id_string = card_data["card_id"]
     final_card_id = card_id_atom || card_id_string
-    Logger.info("[#{state.room_id}] card_id extraction - atom: #{inspect(card_id_atom)}, string: #{inspect(card_id_string)}, final: #{inspect(final_card_id)}")
+
+    Logger.info(
+      "[#{state.room_id}] card_id extraction - atom: #{inspect(card_id_atom)}, string: #{inspect(card_id_string)}, final: #{inspect(final_card_id)}"
+    )
 
     # Fieldsにも配置情報を更新 - Channel側から送られてきた実際の値を使用
     new_fields =
       Map.update!(state.fields, user_id, fn field ->
         Map.put(field, set_pos, %{
           card_id: card_data[:card_id] || card_data["card_id"],
-          # Channel側から送られてきた実際の値を使用（デフォルト値は最後の手段）
           hp: card_data[:hp] || card_data["hp"] || 100,
           name: card_data[:name] || card_data["name"] || "Unknown Card",
           attack: card_data[:attack] || card_data["attack"] || 0,
@@ -187,7 +194,9 @@ defmodule AlternativeServer.Game.GameServer do
         })
       end)
 
-    Logger.info("[#{state.room_id}] Updated field for player #{user_id}, position #{set_pos}: #{inspect(get_in(new_fields, [user_id, set_pos]))}")
+    Logger.info(
+      "[#{state.room_id}] Updated field for player #{user_id}, position #{set_pos}: #{inspect(get_in(new_fields, [user_id, set_pos]))}"
+    )
 
     %{state | players: new_players, fields: new_fields}
   end
@@ -222,6 +231,36 @@ defmodule AlternativeServer.Game.GameServer do
     %{state | players: new_players}
   end
 
+  # アクションカード
+  defp update_state_for_action(state, user_id, :action_card, %{"action" => action} = data) do
+    # カードアクションの種類に応じて処理を分岐
+    case action do
+      "attack" ->
+        handle_attack_action(state, user_id, data)
+
+      "skill" ->
+        handle_skill_action(state, user_id, data)
+
+      "move" ->
+        handle_move_action(state, user_id, data)
+
+      "wait" ->
+        handle_wait_action(state, user_id)
+
+      "end_turn" ->
+        # プレイヤーのアクション終了状態を更新
+        new_players = Map.update!(state.players, user_id, &Map.put(&1, :ready, true))
+        %{state | players: new_players}
+
+      _ ->
+        Logger.warning(
+          "[#{state.room_id}] Unknown action type: #{action} from player: #{user_id}"
+        )
+
+        state
+    end
+  end
+
   # 未知のアクションの場合はログを出して状態を変更しない
   defp update_state_for_action(state, user_id, action, data) do
     Logger.warning(
@@ -229,6 +268,95 @@ defmodule AlternativeServer.Game.GameServer do
     )
 
     state
+  end
+
+  # 攻撃アクションの処理
+  defp handle_attack_action(
+       state,
+       user_id,
+       %{"target_pos" => target_pos, "attacker_pos" => attacker_pos, "target_player_id" => target_player_id} = _data
+     ) do
+    Logger.info(
+      "[#{state.room_id}] Player #{user_id} attacks player #{target_player_id}'s position #{target_pos} with card at #{attacker_pos}"
+    )
+
+    # 攻撃側のカード情報を取得
+    attacker_card = get_in(state.fields, [user_id, attacker_pos])
+
+    # 被攻撃側のカード情報を取得（相手プレイヤーから）
+    target_card = get_in(state.fields, [target_player_id, target_pos])
+
+    # ダメージ計算（ガード値も考慮）
+    base_damage = if attacker_card, do: attacker_card.attack, else: 0
+    guard_value = if target_card, do: target_card.guard, else: 0
+    actual_damage = max(base_damage - guard_value, 0)
+    new_target_hp = if target_card, do: max(target_card.hp - actual_damage, 0), else: 0
+
+    Logger.info(
+      "[#{state.room_id}] Base damage: #{base_damage}, Guard: #{guard_value}, Actual damage: #{actual_damage}, Target new HP: #{new_target_hp}"
+    )
+
+    # 相手プレイヤーのフィールドを更新
+    new_fields =
+      Map.update!(state.fields, target_player_id, fn field ->
+        Map.update!(field, target_pos, fn card ->
+          if card do
+            updated_card = Map.put(card, :hp, new_target_hp)
+            # HPが0になったら状態を"closed"に変更
+            if new_target_hp <= 0 do
+              Map.put(updated_card, :status, "closed")
+            else
+              updated_card
+            end
+          else
+            nil
+          end
+        end)
+      end)
+
+    # プレイヤーのアクション完了状態を更新
+    new_players = Map.update!(state.players, user_id, &Map.put(&1, :ready, true))
+
+    # 更新されたstateを返す
+    %{state | fields: new_fields, players: new_players}
+  end
+
+  # スキルアクションの処理
+  # NOTE: 仮実装
+  defp handle_skill_action(
+         state,
+         user_id,
+         %{"skill_id" => skill_id, "caster_pos" => caster_pos} = _data
+       ) do
+    Logger.info(
+      "[#{state.room_id}] Player #{user_id} uses skill #{skill_id} with card at #{caster_pos}"
+    )
+
+    # スキル効果をフィールドに適用
+    # new_fields = apply_skill_effect(state.fields, user_id, caster_pos, skill_id)
+    new_fields = state.fields # 仮実装
+    %{state | fields: new_fields}
+  end
+
+  # 移動アクションの処理
+  # NOTE: 仮実装
+  defp handle_move_action(state, user_id, %{"from_pos" => from_pos, "to_pos" => to_pos} = _data) do
+    Logger.info("[#{state.room_id}] Player #{user_id} moves card from #{from_pos} to #{to_pos}")
+
+    # カードの位置を移動
+    # new_fields = move_card_on_field(state.fields, user_id, from_pos, to_pos)
+    new_fields = state.fields # 仮実装
+
+    %{state | fields: new_fields}
+  end
+
+  # NOTE: 仮実装
+  defp handle_wait_action(state, user_id) do
+    Logger.info("[#{state.room_id}] Player #{user_id} chooses to wait")
+
+    # プレイヤーの待機状態を更新
+    new_players = Map.update!(state.players, user_id, &Map.put(&1, :ready, true))
+    %{state | players: new_players}
   end
 
   # 条件をチェックして、満たされていればブロードキャストする
@@ -369,10 +497,89 @@ defmodule AlternativeServer.Game.GameServer do
             Logger.info(
               "[#{state.room_id}] Turn #{state.turn} open phase completed, moving to action phase"
             )
+            # ここからアクションフェイズの処理
 
-            broadcast(state.room_id, "phase_changed:open", %{status: true})
+            # アクションフェイズ開始時、行動順を決定
+            Logger.info("[#{state.room_id}] Action phase started")
+
+            # ← 新しい変数として定義
+            action_queue =
+              for {player_id, field} <- state.fields do
+                for {position, card_data} <- field do
+                  # statusがactiveのカードのみ行動順に追加
+                  if card_data && Map.get(card_data, :status) == "active" do
+                    %{player_id: player_id, position: position, speed: card_data.speed}
+                  end
+                end
+              end
+              |> List.flatten()
+              # nilを除去
+              |> Enum.filter(& &1)
+              # 速度順にソート
+              |> Enum.sort_by(& &1.speed, :desc)
+              # 同じ速度の場合はランダムに順序を入れ替え
+              |> Enum.chunk_by(& &1.speed)
+              |> Enum.flat_map(&Enum.shuffle/1)
+              |> Enum.sort_by(& &1.speed, :desc)
+
+            # 速度順にソート
+            Logger.info("[#{state.room_id}] Action queue determined: #{inspect(action_queue)}")
+
+            # 一番速いカードのプレイヤーに操作を促す
+            if action_queue != [] do
+              # キューから
+              first_actor = hd(action_queue)
+              Logger.info("[#{state.room_id}] First actor: #{inspect(first_actor)}")
+              broadcast(state.room_id, "phase_changed:open", %{status: true, action_user_id: first_actor.player_id})
+              # action_queueをStateに保存する, フェーズをアクションフェイズに更新
+              new_state = reset_ready_status(state)
+              {:noreply, %{new_state | action_queue: action_queue, phase: :action_phase_action_check}}
+            else
+              Logger.info("[#{state.room_id}] No active cards to act in action phase")
+              # 誰もいない場合、アクションフェイズ終了へ
+              broadcast(state.room_id, "phase_changed:action", %{status: true})
+              new_state = reset_ready_status(state)
+              {:noreply, %{new_state | phase: :ready_check, turn: state.turn + 1}}
+            end
+          end
+        else
+          {:noreply, state}
+        end
+
+      # アクションフェイズ、アクション開始待ち
+      :action_phase_start_check ->
+        if all_players_ready?(state) do
+          Logger.info("[#{state.room_id}] Action phase started")
+          # アクション内容をイベント化する
+
+          broadcast(state.room_id, "phase_changed:action", %{status: true})
+          new_state = reset_ready_status(state)
+          {:noreply, %{new_state | phase: :action_phase_action_check}}
+        else
+          {:noreply, state}
+        end
+
+      # アクションフェイズ、アクション終了待ち
+      :action_phase_action_check ->
+        if all_players_ready?(state) do
+          # 次の行動順を処理
+          Logger.info("[#{state.room_id}] Moving to next action in queue")
+          # action_queueが空ならアクションフェイズ終了
+          if state.action_queue == [] do
+            Logger.info("[#{state.room_id}] Action queue empty, moving to action phase end")
+            broadcast(state.room_id, "action_phase_end", %{status: true})
             new_state = reset_ready_status(state)
             {:noreply, %{new_state | phase: :action_phase_check}}
+          else
+            # 次の行動者をdequeueする
+            new_state = reset_ready_status(state)
+            # action_queueから先頭の要素を取得してから、残りのキューを作成
+            [next_actor | remaining_queue] = state.action_queue
+            Logger.info("[#{state.room_id}] Next actor: #{inspect(next_actor)}")
+            broadcast(state.room_id, "action_next", %{next_actor: next_actor})
+            # 新しいstateに残りのキューを設定
+            final_state = %{new_state | action_queue: remaining_queue}
+            {:noreply, final_state}
           end
         else
           {:noreply, state}
@@ -450,21 +657,25 @@ defmodule AlternativeServer.Game.GameServer do
 
   # setステータスのカードを召喚して、ステータスをactiveに更新する
   defp summon_set_cards(state) do
-    Logger.info("[#{state.room_id}] Starting summon_set_cards - current fields: #{inspect(state.fields)}")
+    Logger.info(
+      "[#{state.room_id}] Starting summon_set_cards - current fields: #{inspect(state.fields)}"
+    )
 
     # まず召喚イベントを作成（バリデーション付き）
     {valid_events, errors} =
       for {player_id, field} <- state.fields,
           {position, card_data} <- field,
           card_data && Map.get(card_data, :status) == "set" do
+        Logger.info(
+          "[#{state.room_id}] Processing summon for player #{player_id}, position #{position}"
+        )
 
-        Logger.info("[#{state.room_id}] Processing summon for player #{player_id}, position #{position}")
         Logger.info("[#{state.room_id}] Card data before summon: #{inspect(card_data)}")
 
-        # card_idの存在チェック
-        card_id = card_data[:card_id] || card_data["card_id"]
+        # card_idの存在チェック（文字列→整数変換も追加）
+        raw_card_id = card_data[:card_id] || card_data["card_id"]
 
-        case card_id do
+        case raw_card_id do
           nil ->
             error_msg = "Card ID is missing for player #{player_id} at position #{position}"
             Logger.error("[#{state.room_id}] #{error_msg}")
@@ -481,8 +692,32 @@ defmodule AlternativeServer.Game.GameServer do
             Logger.info("[#{state.room_id}] Valid summon payload: #{inspect(summon_payload)}")
             {:ok, %{event_type: "summon", payload: summon_payload}}
 
+          # 文字列のcard_idを整数に変換
+          string_id when is_binary(string_id) ->
+            case Integer.parse(string_id) do
+              {parsed_id, ""} when parsed_id > 0 ->
+                summon_payload = %{
+                  user_id: player_id,
+                  position: position,
+                  card_id: parsed_id,
+                  turn: state.turn
+                }
+
+                Logger.info("[#{state.room_id}] Valid summon payload (converted): #{inspect(summon_payload)}")
+                {:ok, %{event_type: "summon", payload: summon_payload}}
+
+              _ ->
+                error_msg =
+                  "Invalid card ID string (#{inspect(string_id)}) for player #{player_id} at position #{position}"
+
+                Logger.error("[#{state.room_id}] #{error_msg}")
+                {:error, %{player_id: player_id, position: position, reason: error_msg}}
+            end
+
           invalid_id ->
-            error_msg = "Invalid card ID (#{inspect(invalid_id)}) for player #{player_id} at position #{position}"
+            error_msg =
+              "Invalid card ID (#{inspect(invalid_id)}) for player #{player_id} at position #{position}"
+
             Logger.error("[#{state.room_id}] #{error_msg}")
             {:error, %{player_id: player_id, position: position, reason: error_msg}}
         end
@@ -518,14 +753,29 @@ defmodule AlternativeServer.Game.GameServer do
           updated_field =
             for {position, card_data} <- field, into: %{} do
               if card_data && Map.get(card_data, :status) == "set" do
-                # card_idが有効な場合のみactiveに変更
-                card_id = card_data[:card_id] || card_data["card_id"]
-                if is_integer(card_id) and card_id > 0 do
+                # card_idが有効な場合のみactiveに変更（文字列→整数変換も対応）
+                raw_card_id = card_data[:card_id] || card_data["card_id"]
+
+                # 整数または有効な文字列かチェック
+                valid_card_id = case raw_card_id do
+                  id when is_integer(id) and id > 0 -> true
+                  string_id when is_binary(string_id) ->
+                    case Integer.parse(string_id) do
+                      {parsed_id, ""} when parsed_id > 0 -> true
+                      _ -> false
+                    end
+                  _ -> false
+                end
+
+                if valid_card_id do
                   updated_card = Map.put(card_data, :status, "active")
                   {position, updated_card}
                 else
                   # 無効なcard_idの場合は削除するか、エラー状態にする
-                  Logger.warning("[#{state.room_id}] Removing invalid card at #{player_id}:#{position}")
+                  Logger.warning(
+                    "[#{state.room_id}] Removing invalid card at #{player_id}:#{position}"
+                  )
+
                   {position, nil}
                 end
               else
