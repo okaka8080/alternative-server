@@ -102,6 +102,10 @@ defmodule AlternativeServerWeb.RoomChannel do
     RoomChannelGame.action_card(params, socket)
   end
 
+  def handle_in("action_card_with_target", params, socket) do
+    RoomChannelGame.action_card_with_target(params, socket)
+  end
+
   def handle_info({:after_join, user}, socket) do
     broadcast(socket, "user_joined", user)
     Logger.info("user is #{user.user_id}, #{user.user_name}")

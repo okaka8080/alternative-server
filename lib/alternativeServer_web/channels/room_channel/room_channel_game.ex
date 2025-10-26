@@ -184,14 +184,26 @@ defmodule AlternativeServerWeb.RoomChannelGame do
     {:noreply, socket}
   end
 
-  def action_card(%{"user_id" => user_id, "action_id" => action_id, "target" => target}, socket) do
+  def action_card(%{"user_id" => user_id, "action_id" => action_id}, socket) do
     room_id = socket.assigns.user_assign.room_id
     Redis.set("room:#{room_id}:game:#{user_id}:is_wait", "true")
 
     # GameServerにカードアクションを通知(アクションIDとターゲットを渡す)
     GameServer.player_action(room_id, user_id, :action_select_end, %{
       "action_id" => action_id,
-      "target" => target
+    })
+
+    {:noreply, socket}
+  end
+
+  def action_card_with_target(%{"user_id" => user_id, "action_id" => action_id, "target_id" => target_id}, socket) do
+    room_id = socket.assigns.user_assign.room_id
+    Redis.set("room:#{room_id}:game:#{user_id}:is_wait", "true")
+
+    # GameServerにカードアクションを通知(アクションIDとターゲットを渡す)
+    GameServer.player_action(room_id, user_id, :action_select_end, %{
+      "action_id" => action_id,
+      "target_id" => target_id
     })
 
     {:noreply, socket}
