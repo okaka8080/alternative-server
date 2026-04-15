@@ -1,0 +1,590 @@
+openapi: 3.0.3
+info:
+  title: Alternative Card Game Server API
+  description: |
+    Alternative Cardはオンライン対戦型カードゲームのサーバーAPIである
+    
+    ## 主な機能
+    - ユーザー認証・登録
+    - ルーム作成・参加・管理
+    - リアルタイム対戦（WebSocket）
+    
+    ## 認証方式
+    多くのエンドポイントでは、リクエストヘッダーに`authorization`トークンが必要
+  version: 0.1.0
+
+servers:
+  - url: http://localhost:4000/api/v1
+    description: 開発環境
+
+tags:
+  - name: health
+    description: ヘルスチェック関連
+  - name: auth
+    description: 認証・ユーザー登録関連
+  - name: rooms
+    description: ルーム管理関連
+
+paths:
+  /healthcheck:
+    get:
+      tags:
+        - health
+      summary: ヘルスチェック（GET）
+      description: サーバーの稼働状態を確認
+      operationId: getHealth
+      responses:
+        '200':
+          description: サーバーが正常に稼働中です
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Health Check is OK!!"
+    
+    post:
+      tags:
+        - health
+      summary: ヘルスチェック（POST）
+      description: 送信したパラメータをエコーバック
+      operationId: postHealth
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+              example:
+                test: "value"
+      responses:
+        '200':
+          description: リクエストボディをそのまま返却
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+
+  /log_in:
+    post:
+      tags:
+        - auth
+      summary: ログイン
+      description: メールアドレスとパスワードでログイン
+      operationId: loginUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - email
+                - password
+              properties:
+                email:
+                  type: string
+                  format: email
+                  example: "user@example.com"
+                password:
+                  type: string
+                  format: password
+                  example: "password123"
+      responses:
+        '200':
+          description: ログイン成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token:
+                    type: string
+                    description: Base64エンコードされたセッショントークン
+                    example: "dGVzdF90b2tlbl8xMjM0NTY="
+                  id:
+                    type: string
+                    format: uuid
+                    description: ユーザーID
+                    example: "550e8400-e29b-41d4-a716-446655440000"
+                  name:
+                    type: string
+                    description: ユーザー名
+                    example: "Player1"
+        '401':
+          description: 認証失敗（メールアドレスまたはパスワードが不正）
+          content:
+            text/html:
+              schema:
+                type: string
+                example: "Unauthorized"
+        '400':
+          description: リクエストが不正
+          content:
+            text/html:
+              schema:
+                type: string
+
+  /register:
+    post:
+      tags:
+        - auth
+      summary: ユーザー登録
+      description: 新規ユーザーを登録
+      operationId: registerUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - email
+                - password
+                - name
+              properties:
+                email:
+                  type: string
+                  format: email
+                  example: "newuser@example.com"
+                password:
+                  type: string
+                  format: password
+                  minLength: 12
+                  description: 12文字以上のパスワード
+                  example: "securePassword123"
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 50
+                  example: "NewPlayer"
+      responses:
+        '200':
+          description: 登録成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    format: uuid
+                    example: "660e8400-e29b-41d4-a716-446655440000"
+                  name:
+                    type: string
+                    example: "NewPlayer"
+                  email:
+                    type: string
+                    example: "newuser@example.com"
+                  coins:
+                    type: integer
+                    description: 所持コイン数
+                    example: 0
+                  token:
+                    type: string
+                    description: Base64エンコードされたセッショントークン
+                    example: "bmV3X3Rva2VuXzEyMzQ1Ng=="
+        '400':
+          description: バリデーションエラー
+          content:
+            text/html:
+              schema:
+                type: string
+
+  /status:
+    get:
+      tags:
+        - auth
+      summary: 認証ステータス確認
+      description: 現在ログイン中のユーザー情報を取得
+      operationId: getUserStatus
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: 認証済み
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "user@example.com enable"
+        '401':
+          description: 未認証
+
+  /rooms:
+    get:
+      tags:
+        - rooms
+      summary: ルーム一覧取得
+      description: 公開されているルーム一覧を取得
+      operationId: getAllRooms
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: ルーム一覧取得成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  rooms:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Room'
+        '401':
+          description: 未認証
+
+  /rooms/{id}:
+    get:
+      tags:
+        - rooms
+      summary: ルーム詳細取得
+      description: 指定したIDのルーム情報を取得
+      operationId: getRoomById
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: ルームID（6桁の16進数文字列）
+          schema:
+            type: string
+            pattern: '^[0-9a-f]{6}$'
+            example: "a1b2c3"
+      responses:
+        '200':
+          description: ルーム情報取得成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Room'
+        '404':
+          description: ルームが見つかりません
+        '401':
+          description: 未認証
+
+    delete:
+      tags:
+        - rooms
+      summary: ルーム削除
+      description: 指定したIDのルームを削除（オーナーのみ可能）
+      operationId: deleteRoom
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: ルームID
+          schema:
+            type: string
+            example: "a1b2c3"
+      responses:
+        '200':
+          description: 削除成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "ok"
+        '400':
+          description: 削除失敗（権限がないなど）
+        '401':
+          description: 未認証
+
+  /rooms/create:
+    post:
+      tags:
+        - rooms
+      summary: ルーム作成
+      description: 新しいルームを作成
+      operationId: createRoom
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - userId
+                - name
+                - isPublic
+              properties:
+                userId:
+                  type: string
+                  format: uuid
+                  description: ルーム作成者のユーザーID
+                  example: "550e8400-e29b-41d4-a716-446655440000"
+                name:
+                  type: string
+                  minLength: 1
+                  description: ルーム名
+                  example: "My Battle Room"
+                isPublic:
+                  type: boolean
+                  description: 公開ルームかどうか
+                  example: true
+                password:
+                  type: string
+                  description: プライベートルームの場合のパスワード（オプション）
+                  example: "secret123"
+      responses:
+        '200':
+          description: ルーム作成成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    description: 作成されたルームID
+                    example: "a1b2c3"
+        '400':
+          description: リクエストが不正
+        '401':
+          description: 未認証
+
+  /rooms/join/{id}:
+    put:
+      tags:
+        - rooms
+      summary: ルーム参加
+      description: 指定したルームに参加
+      operationId: joinRoom
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 参加するルームID
+          schema:
+            type: string
+            example: "a1b2c3"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - userId
+              properties:
+                userId:
+                  type: string
+                  format: uuid
+                  description: 参加するユーザーID
+                  example: "660e8400-e29b-41d4-a716-446655440000"
+                password:
+                  type: string
+                  description: プライベートルームの場合のパスワード
+                  example: "secret123"
+      responses:
+        '200':
+          description: 参加成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "ok"
+        '400':
+          description: 参加失敗（パスワード不一致、満員など）
+        '401':
+          description: 未認証
+        '404':
+          description: ルームが見つかりません
+
+  /rooms/exit/{id}:
+    put:
+      tags:
+        - rooms
+      summary: ルーム退出
+      description: 指定したルームから退出
+      operationId: exitRoom
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 退出するルームID
+          schema:
+            type: string
+            example: "a1b2c3"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - userId
+              properties:
+                userId:
+                  type: string
+                  format: uuid
+                  description: 退出するユーザーID
+                  example: "550e8400-e29b-41d4-a716-446655440000"
+      responses:
+        '200':
+          description: 退出成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "ok"
+        '400':
+          description: 退出失敗
+        '401':
+          description: 未認証
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: Base64
+      description: |
+        ログイン時に取得したトークンをBase64エンコードして使用
+        
+        ヘッダー例:
+        ```
+        Authorization: Bearer dGVzdF90b2tlbl8xMjM0NTY=
+        ```
+
+  schemas:
+    Room:
+      type: object
+      description: ルーム情報
+      properties:
+        id:
+          type: string
+          description: ルームID（6桁の16進数）
+          example: "a1b2c3"
+        name:
+          type: string
+          description: ルーム名
+          example: "My Battle Room"
+        password:
+          type: string
+          nullable: true
+          description: パスワード（プライベートルームの場合）
+          example: "secret123"
+        joined_users:
+          type: integer
+          description: 参加人数
+          minimum: 0
+          maximum: 2
+          example: 1
+        is_active:
+          type: boolean
+          description: アクティブ状態
+          example: true
+        is_public:
+          type: boolean
+          description: 公開ルームかどうか
+          example: true
+        owner_id:
+          type: string
+          format: uuid
+          description: ルームオーナーのユーザーID
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        inserted_at:
+          type: string
+          format: date-time
+          description: 作成日時（UTC）
+          example: "2024-01-15T10:30:00Z"
+        updated_at:
+          type: string
+          format: date-time
+          description: 更新日時（UTC）
+          example: "2024-01-15T11:00:00Z"
+
+    User:
+      type: object
+      description: ユーザー情報
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: ユーザーID
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        email:
+          type: string
+          format: email
+          description: メールアドレス
+          example: "user@example.com"
+        name:
+          type: string
+          description: ユーザー名
+          example: "Player1"
+        coins:
+          type: integer
+          description: 所持コイン数
+          example: 1000
+        last_login:
+          type: string
+          format: date-time
+          nullable: true
+          description: 最終ログイン日時
+          example: "2024-01-15T12:00:00Z"
+        is_deleted:
+          type: boolean
+          description: 削除済みフラグ
+          example: false
+
+    Error:
+      type: object
+      description: エラーレスポンス
+      properties:
+        errors:
+          type: object
+          properties:
+            detail:
+              type: string
+              description: エラーの詳細
+              example: "Not Found"
+
+  responses:
+    UnauthorizedError:
+      description: 認証エラー
+      content:
+        text/html:
+          schema:
+            type: string
+            example: "Unauthorized"
+    
+    BadRequestError:
+      description: リクエストが不正
+      content:
+        text/html:
+          schema:
+            type: string
+            example: "Bad Request"
+    
+    NotFoundError:
+      description: リソースが見つかりません
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
